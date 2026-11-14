@@ -122,6 +122,36 @@ for the review wave after the Cursor block. All three launched successfully agai
 - **Field checkpoint: PENDING — user tests on iPad (capture, library import, note, save to Files,
   orientation/numbering/notes inspection, representative 50-photo export + private upload)**
 
+## Field evidence (user iPad, deployment 1)
+
+- User supplied their 50-photo export `Cabinet-Walk_2026-11-14.pdf` (no job ID — blank, contract-correct):
+  **13 pages, 50 images, numbering 1–50 consecutive, "page X of 13" on every page, header date present,
+  no notes attached** (pdfjs-verified from the actual file). Size **14.5MB** (~290KB/photo after
+  normalization) — this is the byte size for their internal-upload test.
+- Private internal-upload result: **pending user report**.
+
+## Review wave 2 results + fixes (codex/gpt-6.1-sol, high)
+
+PDF/images review returned 9 findings (8 major, 1 minor) — all verified against source, all fixed in
+`92361ed`, suite now **86/86** (5 PDF-layout + 3 export-lifecycle regressions added):
+1. Wrapped notes read bottom-to-top (baseline stacking) → top-down baselines
+2. Explicit `\n` bypassed wrapping and overflowed pages → forced lines with measured spacing
+3. 'W'-based worst-case reserve insufficient for wide glyphs → per-photo dynamic fit (shrink-to-fit
+   8pt→5pt) with visible `[Note did not fully fit]` marker for physically unplaceable notes
+4. Unsupported characters (CJK/emoji) silently became boxes → fontkit coverage audit surfaces
+   warnings in the export UI (accents unaffected)
+5. Snapshot build outside try wedged export on blob-read failure → in try + finally reset
+6. Removal during decode created numbering gaps (stale countPhotos) → removal gated mid-import
+7. Export used stale `walk.jobId` after edits/clears → live job ID input
+8. No export/mutation mutual gate → export disabled mid-import; capture/notes/remove/clear/pause
+   disabled mid-export; clear disabled mid-import
+9. Repeated downloads leaked blob URLs → revoke before replace
+
+**Deployment 2** (post-fix): redeployed to https://pik-2-pdf.vercel.app from `92361ed`; live note
+export verified — line y positions 425→415→405 (correct top-down order), accented text intact.
+
+Persistence + offline/acceptance reviews: still running.
+
 ## Integration / review / deployment
 
 (pending)
