@@ -34,13 +34,18 @@ import { MAX_PHOTOS } from '../types/walk';
 export type StorageErrorCode = 'quota' | 'transaction' | 'locked' | 'unknown';
 
 export class StorageError extends Error {
+  /** Precondition misses ('No walk', 'Photo not found', walk-already-exists)
+   *  are application-state races, NOT storage failures: they reject their own
+   *  mutation but must never block the save queue. */
+  precondition?: boolean;
   constructor(
     public code: StorageErrorCode,
     message: string,
-    options?: { cause?: unknown },
+    options?: { cause?: unknown; precondition?: boolean },
   ) {
     super(message, options);
     this.name = 'StorageError';
+    this.precondition = options?.precondition ?? false;
   }
 }
 
@@ -243,6 +248,11 @@ class WalkStoreImpl implements WalkStore {
           job.resolve(result);
         } catch (err) {
           const storageErr = toStorageError(err);
+          if (storageErr instanceof StorageError && storageErr.precondition) {
+            // Application-state race: reject this mutation, keep draining.
+            job.reject(storageErr);
+            continue;
+          }
           this.blockedJob = job;
           job.reject(storageErr);
           this.emit('save-failed', storageErr);
@@ -302,7 +312,7 @@ class WalkStoreImpl implements WalkStore {
       const db = await openDatabase();
       const existing = await this.readCurrentWalk(db);
       if (existing) {
-        throw new StorageError('unknown', 'A walk already exists');
+        throw new StorageError('unknown', 'A walk already exists', { precondition: true });
       }
       const now = Date.now();
       const walk: Walk = {
@@ -332,7 +342,7 @@ class WalkStoreImpl implements WalkStore {
       const db = await openDatabase();
       const walk = await this.readCurrentWalk(db);
       if (!walk) {
-        throw new StorageError('unknown', 'No walk to append to');
+        throw new StorageError('unknown', 'No walk to append to', { precondition: true });
       }
       const tx = db.transaction(['photos', 'walks'], 'readwrite');
       const photoStore = tx.objectStore('photos');
@@ -358,7 +368,7 @@ class WalkStoreImpl implements WalkStore {
       const db = await openDatabase();
       const walk = await this.readCurrentWalk(db);
       if (!walk) {
-        throw new StorageError('unknown', 'No walk');
+        throw new StorageError('unknown', 'No walk', { precondition: true });
       }
       const tx = db.transaction(['photos', 'walks'], 'readwrite');
       const photoStore = tx.objectStore('photos');
@@ -388,11 +398,11 @@ class WalkStoreImpl implements WalkStore {
       await dbTestHooks.beforeQueuedTransaction?.('updateNote');
       const db = await openDatabase();
       const walk = await this.readCurrentWalk(db);
-      if (!walk) throw new StorageError('unknown', 'No walk');
+      if (!walk) throw new StorageError('unknown', 'No walk', { precondition: true });
       const tx = db.transaction(['photos', 'walks'], 'readwrite');
       const photo = await tx.objectStore('photos').get(photoId);
       if (!photo || photo.walkId !== walk.id) {
-        throw new StorageError('unknown', 'Photo not found');
+        throw new StorageError('unknown', 'Photo not found', { precondition: true });
       }
       await tx.objectStore('photos').put({ ...photo, note });
       await tx.objectStore('walks').put({ ...walk, updatedAt: Date.now() });
@@ -405,7 +415,7 @@ class WalkStoreImpl implements WalkStore {
       await dbTestHooks.beforeQueuedTransaction?.('updateJobId');
       const db = await openDatabase();
       const walk = await this.readCurrentWalk(db);
-      if (!walk) throw new StorageError('unknown', 'No walk');
+      if (!walk) throw new StorageError('unknown', 'No walk', { precondition: true });
       const tx = db.transaction('walks', 'readwrite');
       await tx.store.put({ ...walk, jobId, updatedAt: Date.now() });
       await tx.done;
@@ -431,7 +441,7 @@ class WalkStoreImpl implements WalkStore {
         await dbTestHooks.beforeQueuedTransaction?.('setStatus');
         const db = await openDatabase();
         const walk = await this.readCurrentWalk(db);
-        if (!walk) throw new StorageError('unknown', 'No walk');
+        if (!walk) throw new StorageError('unknown', 'No walk', { precondition: true });
         const tx = db.transaction('walks', 'readwrite');
         await tx.store.put({ ...walk, status, updatedAt: Date.now() });
         await tx.done;

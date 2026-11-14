@@ -135,12 +135,16 @@ export function WalkApp({ deps }: WalkAppProps) {
   const persistJobId = useCallback(
     (value: string) => {
       if (readOnly || !storeRef.current) return;
+      // No walk yet: keep the value in state; ensureWalk() creates the walk
+      // with it. Calling updateJobId before the walk exists would be a
+      // precondition miss (and historically deadlocked the save queue).
+      if (!walk) return;
       if (jobIdTimerRef.current) clearTimeout(jobIdTimerRef.current);
       jobIdTimerRef.current = setTimeout(() => {
         void storeRef.current?.updateJobId(value).catch(() => undefined);
       }, 300);
     },
-    [readOnly],
+    [readOnly, walk],
   );
 
   const handleJobIdChange = (value: string) => {

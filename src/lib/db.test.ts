@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MAX_PHOTOS } from '../types/walk';
+import type { SaveState } from '../types/walk';
 import {
   StorageError,
   createWalkStore,
@@ -321,3 +322,39 @@ function deferred<T>() {
   });
   return { promise, resolve };
 }
+describe('precondition misses do not block the queue (integration regression)', () => {
+  beforeEach(async () => {
+    resetDbTestHooks();
+    resetWriterLockForTests();
+    await resetDatabase();
+  });
+
+  afterEach(() => {
+    resetDbTestHooks();
+    resetWriterLockForTests();
+  });
+
+  it('updateJobId before createWalk rejects without blocking later mutations', async () => {
+    const store = createWalkStore();
+    const states: SaveState[] = [];
+    store.subscribeSaveState((s) => states.push(s));
+
+    // UI types a job id before the first photo: updateJobId has no walk yet.
+    await expect(store.updateJobId('J-77A')).rejects.toBeTruthy();
+    // The queue must still drain: createWalk + appendPhoto work normally.
+    const walk = await store.createWalk('J-77A');
+    expect(walk.jobId).toBe('J-77A');
+    await store.appendPhoto(makePhotoInput({ id: 'A', order: 0 }));
+    expect(await store.countPhotos()).toBe(1);
+    expect(states[states.length - 1]).toBe('saved');
+    expect(states).not.toContain('save-failed');
+  });
+
+  it('updateNote for an unknown photo does not block the queue', async () => {
+    const store = createWalkStore();
+    await store.createWalk('');
+    await expect(store.updateNote('missing-id', 'x')).rejects.toBeTruthy();
+    await store.appendPhoto(makePhotoInput({ id: 'A', order: 0 }));
+    expect(await store.countPhotos()).toBe(1);
+  });
+});
