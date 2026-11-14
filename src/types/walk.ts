@@ -102,6 +102,8 @@ export type PdfRenderDone = {
   type: 'done';
   bytes: ArrayBuffer;
   filename: string;
+  /** Non-fatal notices (e.g. characters not covered by the bundled font). */
+  warnings?: string[];
 };
 
 export type PdfRenderError = {

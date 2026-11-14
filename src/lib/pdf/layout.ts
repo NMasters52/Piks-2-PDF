@@ -74,64 +74,74 @@ function tileOrigin(col: number, row: number): { x: number; yBottom: number; yTo
   return { x, yBottom, yTop };
 }
 
-/** Wrap note text to lines; breaks overlong tokens by measured width. */
-export function wrapNoteLines(note: string, font: PDFFont, maxWidth: number): string[] {
+/** Wrap note text to lines at `size`: explicit line breaks are honored as
+ *  forced lines, whitespace is measured (never passed through to drawText,
+ *  which would apply its own line spacing), and long unbroken tokens are
+ *  broken by measured width. Blank segments (e.g. '\n\n') produce empty
+ *  lines that still consume vertical space. */
+export function wrapNoteLines(
+  note: string,
+  font: PDFFont,
+  maxWidth: number,
+  size: number = NOTE_FONT_SIZE,
+): string[] {
   if (!note) return [];
   const lines: string[] = [];
-  const words = note.split(/(\s+)/);
+  const paragraphs = note.split(/\r\n|\r|\n/);
 
-  let current = '';
-  const flush = () => {
-    if (current) {
-      lines.push(current);
-      current = '';
-    }
-  };
-
-  const breakLongToken = (token: string) => {
-    let chunk = '';
-    for (const ch of token) {
-      const next = chunk + ch;
-      if (font.widthOfTextAtSize(next, NOTE_FONT_SIZE) <= maxWidth) {
-        chunk = next;
+  const wrapSegment = (segment: string) => {
+    const words = segment.split(/(\s+)/);
+    let current = '';
+    const flush = () => {
+      if (current) {
+        lines.push(current);
+        current = '';
+      }
+    };
+    const breakLongToken = (token: string) => {
+      let chunk = '';
+      for (const ch of token) {
+        const next = chunk + ch;
+        if (font.widthOfTextAtSize(next, size) <= maxWidth) {
+          chunk = next;
+        } else {
+          if (chunk) lines.push(chunk);
+          chunk = ch;
+        }
+      }
+      if (chunk) lines.push(chunk);
+    };
+    for (const part of words) {
+      if (!part) continue;
+      if (/^\s+$/.test(part)) {
+        const candidate = current + part;
+        if (font.widthOfTextAtSize(candidate, size) <= maxWidth) current = candidate;
+        else flush();
+        continue;
+      }
+      const candidate = current ? `${current}${part}` : part;
+      if (font.widthOfTextAtSize(candidate, size) <= maxWidth) {
+        current = candidate;
+      } else if (!current) {
+        breakLongToken(part);
       } else {
-        if (chunk) lines.push(chunk);
-        chunk = ch;
+        flush();
+        if (font.widthOfTextAtSize(part, size) <= maxWidth) current = part;
+        else breakLongToken(part);
       }
     }
-    if (chunk) lines.push(chunk);
+    flush();
   };
 
-  for (const part of words) {
-    if (!part) continue;
-    if (/^\s+$/.test(part)) {
-      const candidate = current + part;
-      if (font.widthOfTextAtSize(candidate, NOTE_FONT_SIZE) <= maxWidth) current = candidate;
-      else flush();
-      continue;
-    }
-    const candidate = current ? `${current}${part}` : part;
-    if (font.widthOfTextAtSize(candidate, NOTE_FONT_SIZE) <= maxWidth) {
-      current = candidate;
-    } else if (!current) {
-      breakLongToken(part);
-    } else {
-      flush();
-      if (font.widthOfTextAtSize(part, NOTE_FONT_SIZE) <= maxWidth) current = part;
-      else breakLongToken(part);
-    }
-  }
-  flush();
+  paragraphs.forEach((segment, index) => {
+    if (index > 0) lines.push('');
+    if (segment) wrapSegment(segment);
+  });
   return lines;
 }
 
 export function worstCaseNoteLineCount(font: PDFFont, maxWidth: number = NOTE_MAX_WIDTH_PT): number {
   return wrapNoteLines(WORST_CASE_NOTE, font, maxWidth).length;
-}
-
-function computeNoteReservedHeight(font: PDFFont): number {
-  const lines = worstCaseNoteLineCount(font);
-  return lines * NOTE_LINE_HEIGHT + TILE_PADDING_PT;
 }
 
 function fitImageRect(
@@ -178,10 +188,32 @@ function drawFooter(page: PDFPage, font: PDFFont, pageIndex: number, pageTotal: 
   });
 }
 
+export const NOTE_MIN_FONT_SIZE = 5;
+
+/** Characters in `texts` without a glyph in the embedded font. Export never
+ *  fails on them, but the caller must warn — boxes are not silent. */
+function collectGlyphWarnings(
+  fkFont: { hasGlyphForCodePoint(codePoint: number): boolean },
+  texts: string[],
+): string[] {
+  const missing = new Set<string>();
+  for (const text of texts) {
+    for (const ch of text) {
+      const codePoint = ch.codePointAt(0)!;
+      if (codePoint === 10 || codePoint === 13) continue;
+      if (!fkFont.hasGlyphForCodePoint(codePoint)) missing.add(ch);
+    }
+  }
+  if (missing.size === 0) return [];
+  return [
+    `Characters not covered by the bundled PDF font (they will appear as boxes): ${[...missing].join(' ')}`,
+  ];
+}
+
 export async function renderPdfBytes(
   request: PdfRenderRequest,
   onProgress?: (info: { photosDone: number; totalPhotos: number }) => void,
-): Promise<{ bytes: Uint8Array; filename: string }> {
+): Promise<{ bytes: Uint8Array; filename: string; warnings?: string[] }> {
   const { photos, fontBytes, jobId, walkCreatedAt } = request;
   if (photos.length === 0) {
     throw new Error('Cannot render PDF for an empty photo set');
@@ -200,12 +232,20 @@ export async function renderPdfBytes(
     throw new Error('Font embedding failed', { cause });
   }
 
+  const fkFont = fontkit.create(
+    fontBytes instanceof Uint8Array ? fontBytes : new Uint8Array(fontBytes),
+  ) as unknown as { hasGlyphForCodePoint(codePoint: number): boolean };
+  const glyphWarnings = collectGlyphWarnings(fkFont, [
+    jobId,
+    ...photos.map((p) => p.note),
+  ]);
+
   const totalPages = pageCount(photos.length);
   const filename = buildPdfFilename(jobId, walkCreatedAt);
-  const noteReserved = computeNoteReservedHeight(font);
   const numberBand = NUMBER_FONT_SIZE + 6;
-  const imageBoxHeight = TILE_HEIGHT_PT - noteReserved - numberBand - TILE_PADDING_PT;
   const imageBoxWidth = TILE_WIDTH_PT - TILE_PADDING_PT * 2;
+  // Total vertical space the note block may occupy within a tile (below the image).
+  const maxNoteBlockHeight = TILE_HEIGHT_PT - numberBand - TILE_PADDING_PT * 2;
 
   let photosDone = 0;
   const totalPhotos = photos.length;
@@ -233,38 +273,70 @@ export async function renderPdfBytes(
         color: HEADER_TEXT_COLOR,
       });
 
+      // --- note fit (per photo): measured wrap honoring explicit breaks,
+      // shrinking so the WHOLE note stays inside its tile, never clipped. ---
+      let noteSize = NOTE_FONT_SIZE;
+      let noteLineHeight = NOTE_LINE_HEIGHT;
+      let noteLines = wrapNoteLines(photo.note, font, NOTE_MAX_WIDTH_PT, noteSize);
+      while (
+        noteLines.length > 0 &&
+        noteLines.length * noteLineHeight > maxNoteBlockHeight &&
+        noteSize > NOTE_MIN_FONT_SIZE
+      ) {
+        noteSize = Math.max(NOTE_MIN_FONT_SIZE, noteSize - 0.5);
+        noteLineHeight = noteSize * 1.25;
+        noteLines = wrapNoteLines(photo.note, font, NOTE_MAX_WIDTH_PT, noteSize);
+      }
+      let noteOverflow = false;
+      if (noteLines.length > 0 && noteLines.length * noteLineHeight > maxNoteBlockHeight) {
+        // Physically unplaceable at the floor size (pathological notes, e.g.
+        // many forced breaks): compress spacing to stay on-page and mark the
+        // note visibly. Never silently drop text.
+        noteLineHeight = Math.max(2, maxNoteBlockHeight / noteLines.length);
+        noteOverflow = noteLineHeight < noteSize * 0.8;
+      }
+      const noteBlockHeight = noteLines.length * noteLineHeight + TILE_PADDING_PT;
+
+      // --- image: all remaining tile height above the note block, centered ---
       const jpg = await pdfDoc.embedJpg(photo.jpegBytes);
-      const imgW = photo.width;
-      const imgH = photo.height;
-      const { drawW, drawH, offsetX, offsetY } = fitImageRect(
-        imgW,
-        imgH,
-        imageBoxWidth,
-        imageBoxHeight,
+      const photoImageBoxHeight = Math.max(
+        20,
+        yTop - numberBand - TILE_PADDING_PT - (yBottom + noteBlockHeight + TILE_PADDING_PT),
       );
-
-      const imageBoxBottom = yBottom + noteReserved + TILE_PADDING_PT;
-      const drawX = x + TILE_PADDING_PT + offsetX;
-      const drawY = imageBoxBottom + offsetY;
-
+      const { drawW, drawH, offsetX, offsetY } = fitImageRect(
+        photo.width,
+        photo.height,
+        imageBoxWidth,
+        photoImageBoxHeight,
+      );
       page.drawImage(jpg, {
-        x: drawX,
-        y: drawY,
+        x: x + TILE_PADDING_PT + offsetX,
+        y: yBottom + noteBlockHeight + TILE_PADDING_PT + offsetY,
         width: drawW,
         height: drawH,
       });
 
-      const noteLines = wrapNoteLines(photo.note, font, NOTE_MAX_WIDTH_PT);
-      let noteY = yBottom + TILE_PADDING_PT + (noteReserved - TILE_PADDING_PT - noteLines.length * NOTE_LINE_HEIGHT);
-      for (const line of noteLines) {
+      // --- note: baselines top-down so wrapped lines read in order ---
+      const noteBlockTop = yBottom + noteBlockHeight - TILE_PADDING_PT;
+      for (let i = 0; i < noteLines.length; i++) {
+        const line = noteLines[i]!;
+        if (!line) continue;
         page.drawText(line, {
           x: x + TILE_PADDING_PT,
-          y: noteY,
-          size: NOTE_FONT_SIZE,
+          y: noteBlockTop - noteSize - i * noteLineHeight,
+          size: noteSize,
           font,
           color: HEADER_TEXT_COLOR,
         });
-        noteY += NOTE_LINE_HEIGHT;
+      }
+      if (noteOverflow) {
+        page.drawText('[Note did not fully fit in the photo tile]', {
+          x: x + TILE_PADDING_PT,
+          y: yBottom + TILE_PADDING_PT,
+          size: noteSize,
+          font,
+          color: HEADER_TEXT_COLOR,
+        });
       }
 
       photosDone++;
@@ -273,5 +345,5 @@ export async function renderPdfBytes(
   }
 
   const bytes = await pdfDoc.save();
-  return { bytes, filename };
+  return { bytes, filename, warnings: glyphWarnings.length > 0 ? glyphWarnings : undefined };
 }

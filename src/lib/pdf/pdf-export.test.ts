@@ -197,3 +197,96 @@ describe('PDF export acceptance', () => {
     expect(ticks).toEqual([1, 2, 3]);
   });
 });
+describe('note layout regressions (review fixes)', () => {
+  async function textItemsWithPositions(bytes: Uint8Array) {
+    const doc = await loadPdf(bytes);
+    const page = await doc.getPage(1);
+    const content = await page.getTextContent();
+    return content.items
+      .filter((item) => 'str' in item && item.str.trim())
+      .map((item) => {
+        const str = (item as { str: string }).str;
+        const tr = (item as { transform: number[] }).transform;
+        return { str, x: tr[4], y: tr[5] };
+      });
+  }
+
+  it('reads wrapped note lines top-down in PDF coordinates', async () => {
+    const note = 'alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa quebec romeo sierra tango uniform victor whiskey xray';
+    const { bytes } = await renderPdfBytes({
+      type: 'render', jobId: JOB_ID, walkCreatedAt: TS,
+      photos: makePhotos(1, () => note), fontBytes,
+    });
+    const items = await textItemsWithPositions(bytes);
+    const noteItems = items.filter((it) => /alpha|xray/.test(it.str));
+    expect(noteItems.length).toBeGreaterThanOrEqual(2);
+    const first = noteItems.find((it) => it.str.includes('alpha'))!;
+    const later = noteItems.find((it) => it.str.includes('xray'))!;
+    expect(first.y).toBeGreaterThan(later.y);
+  });
+
+  it('honors explicit line breaks without overflowing the page', async () => {
+    const note = 'First segment\nSecond segment\nThird segment';
+    const { bytes } = await renderPdfBytes({
+      type: 'render', jobId: JOB_ID, walkCreatedAt: TS,
+      photos: makePhotos(1, () => note), fontBytes,
+    });
+    const items = await textItemsWithPositions(bytes);
+    expect(items.some((it) => it.str === 'First segment')).toBe(true);
+    expect(items.some((it) => it.str === 'Second segment')).toBe(true);
+    expect(items.some((it) => it.str === 'Third segment')).toBe(true);
+    const ys = items.map((it) => it.y);
+    expect(Math.max(...ys)).toBeLessThan(792);
+    expect(Math.min(...ys)).toBeGreaterThan(0);
+    const firstY = items.find((it) => it.str === 'First segment')!.y;
+    const secondY = items.find((it) => it.str === 'Second segment')!.y;
+    const thirdY = items.find((it) => it.str === 'Third segment')!.y;
+    expect(firstY).toBeGreaterThan(secondY);
+    expect(secondY).toBeGreaterThan(thirdY);
+  });
+
+  it('keeps a pathological all-wide-character note fully inside the page', async () => {
+    const note = '‱'.repeat(MAX_NOTE_CHARS);
+    const { bytes } = await renderPdfBytes({
+      type: 'render', jobId: JOB_ID, walkCreatedAt: TS,
+      photos: makePhotos(1, () => note), fontBytes,
+    });
+    const items = await textItemsWithPositions(bytes);
+    const drawn = items.filter((it) => it.str.includes('‱'));
+    const totalChars = drawn.reduce((s, it) => s + (it.str.match(/‱/g) || []).length, 0);
+    expect(totalChars).toBe(MAX_NOTE_CHARS);
+    for (const it of drawn) {
+      expect(it.y).toBeGreaterThan(0);
+      expect(it.y).toBeLessThan(792);
+    }
+  });
+
+  it('marks a physically unplaceable note instead of silently clipping it', async () => {
+    const note = 'x\n'.repeat(100);
+    const { bytes } = await renderPdfBytes({
+      type: 'render', jobId: JOB_ID, walkCreatedAt: TS,
+      photos: makePhotos(1, () => note), fontBytes,
+    });
+    const items = await textItemsWithPositions(bytes);
+    expect(items.some((it) => it.str.includes('[Note did not fully fit'))).toBe(true);
+    for (const it of items) {
+      expect(it.y).toBeGreaterThan(0);
+      expect(it.y).toBeLessThan(792);
+    }
+  });
+
+  it('warns about characters the bundled font cannot render, and not about accents', async () => {
+    const withUnsupported = await renderPdfBytes({
+      type: 'render', jobId: JOB_ID, walkCreatedAt: TS,
+      photos: makePhotos(1, () => 'crack 中文 🧰 near hinge'), fontBytes,
+    });
+    expect(withUnsupported.warnings?.[0]).toContain('中');
+    expect(withUnsupported.warnings?.[0]).toContain('🧰');
+
+    const accentsOnly = await renderPdfBytes({
+      type: 'render', jobId: 'ÉCLAIR-É', walkCreatedAt: TS,
+      photos: makePhotos(1, () => 'résumé — façade!'), fontBytes,
+    });
+    expect(accentsOnly.warnings).toBeUndefined();
+  });
+});

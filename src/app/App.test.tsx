@@ -315,3 +315,111 @@ describe('job id input', () => {
     expect(field).toHaveValue('JOB-12');
   });
 });
+describe('export lifecycle regressions (review fixes)', () => {
+  it('exports with the live job ID input, including when cleared', async () => {
+    const store = createFakeWalkStore();
+    const snapshots: Array<{ jobId: string }> = [];
+    const deps = buildTestDeps(store, {
+      renderPdf: async (snapshot) => {
+        snapshots.push({ jobId: snapshot.jobId });
+        return { bytes: new Uint8Array([1]), filename: 'x.pdf' };
+      },
+    });
+    const { user } = renderApp(deps);
+    await waitForReady();
+
+    const jobIdField = screen.getByLabelText(/job \/ lot id/i);
+    await user.type(jobIdField, 'OLD-1');
+    await user.upload(libraryInput(), [jpegFile('a.jpg')]);
+    await waitFor(() => expect(screen.getByText(/Photo 1/i)).toBeInTheDocument());
+
+    await user.clear(jobIdField);
+    await user.type(jobIdField, 'NEW-2');
+    await user.click(screen.getByRole('button', { name: /^export pdf$/i }));
+    await waitFor(() => expect(screen.getByText(/PDF ready/i)).toBeInTheDocument());
+    expect(snapshots[snapshots.length - 1]?.jobId).toBe('NEW-2');
+  });
+
+  it('blocks export while importing and blocks mutations while exporting', async () => {
+    const store = createFakeWalkStore();
+    let slowPhase: 'none' | 'decode' | 'render' = 'none';
+    let releaseDecode: (() => void) | null = null;
+    const decodeGate = new Promise<void>((resolve) => {
+      releaseDecode = resolve;
+    });
+    const deps = buildTestDeps(store, {
+      normalize: async (file) => {
+        if (slowPhase === 'decode') await decodeGate;
+        return {
+          blob: new Blob([file.name], { type: 'image/jpeg' }),
+          mimeType: 'image/jpeg',
+          width: 10,
+          height: 10,
+        };
+      },
+      renderPdf: async (_snapshot, onProgress) => {
+        if (slowPhase === 'render') {
+          await new Promise((r) => setTimeout(r, 400));
+        }
+        onProgress?.({ photosDone: 1, totalPhotos: 1 });
+        return { bytes: new Uint8Array([1]), filename: 'x.pdf' };
+      },
+    });
+    const { user } = renderApp(deps);
+    await waitForReady();
+
+    slowPhase = 'decode';
+    await user.upload(libraryInput(), [jpegFile('slow.jpg')]);
+    await waitFor(() => expect(screen.getByText(/1 importing/i)).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: /^export pdf$/i })).toBeDisabled();
+    releaseDecode!();
+
+    slowPhase = 'none';
+    await waitFor(() => expect(screen.getByText(/Photo 1/i)).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: /^export pdf$/i })).toBeEnabled();
+
+    slowPhase = 'render';
+    await user.click(screen.getByRole('button', { name: /^export pdf$/i }));
+    const removeButtons = await screen.findAllByRole('button', { name: /^remove photo$/i });
+    expect(removeButtons[0]).toBeDisabled();
+    expect(screen.getByRole('button', { name: /clear walk/i })).toBeDisabled();
+
+    await waitFor(() => expect(screen.getByText(/PDF ready/i)).toBeInTheDocument());
+    expect(removeButtons[0]).toBeEnabled();
+  });
+
+  it('stays retryable when building the snapshot fails', async () => {
+    const store = createFakeWalkStore();
+    let failBlobRead = true;
+    class FlakyBlob extends Blob {
+      async arrayBuffer(): Promise<ArrayBuffer> {
+        if (failBlobRead) {
+          failBlobRead = false;
+          return Promise.reject(new Error('blob read failed'));
+        }
+        return super.arrayBuffer();
+      }
+    }
+    const deps = buildTestDeps(store, {
+      normalize: async (file) => ({
+        blob: new FlakyBlob([file.name], { type: 'image/jpeg' }),
+        mimeType: 'image/jpeg',
+        width: 10,
+        height: 10,
+      }),
+    });
+    const { user } = renderApp(deps);
+    await waitForReady();
+
+    await user.upload(libraryInput(), [jpegFile('a.jpg')]);
+    await waitFor(() => expect(screen.getByText(/Photo 1/i)).toBeInTheDocument());
+    expect(screen.queryByText(/Saved/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /^export pdf$/i }));
+    await waitFor(() => expect(screen.getByText(/blob read failed/)).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: /^retry export$/i })).toBeEnabled();
+
+    await user.click(screen.getByRole('button', { name: /^retry export$/i }));
+    await waitFor(() => expect(screen.getByText(/PDF ready/i)).toBeInTheDocument());
+  });
+});

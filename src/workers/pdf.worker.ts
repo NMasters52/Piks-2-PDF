@@ -40,7 +40,12 @@ workerSelf.addEventListener('message', async (event: MessageEvent<PdfRenderReque
       result.bytes.byteOffset + result.bytes.byteLength,
     ) as ArrayBuffer;
     workerSelf.postMessage(
-      { type: 'done', bytes: buffer, filename: result.filename },
+      {
+        type: 'done',
+        bytes: buffer,
+        filename: result.filename,
+        warnings: result.warnings,
+      },
       [buffer],
     );
   } catch (err) {

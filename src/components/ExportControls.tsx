@@ -5,6 +5,7 @@ type ExportControlsProps = {
   exportProgress?: { photosDone: number; totalPhotos: number } | null;
   exportError?: string | null;
   exportReady?: { filename: string } | null;
+  exportWarnings?: string[];
   onShare: () => void;
   onDownload: () => void;
   onDismissExport: () => void;
@@ -20,7 +21,7 @@ export function ExportControls({
   exportProgress,
   exportError,
   exportReady,
-  onShare,
+  exportWarnings,  onShare,
   onDownload,
   onDismissExport,
   onRetryExport,
@@ -64,6 +65,11 @@ export function ExportControls({
           <p className="text-sm" role="status">
             PDF ready: {exportReady.filename}
           </p>
+          {exportWarnings?.map((warning) => (
+            <p key={warning} className="text-xs" role="note">
+              {warning}
+            </p>
+          ))}
           <button
             type="button"
             onClick={onShare}

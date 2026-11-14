@@ -67,6 +67,7 @@ export function WalkApp({ deps }: WalkAppProps) {
     totalPhotos: number;
   } | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
+  const [exportWarnings, setExportWarnings] = useState<string[]>([]);
   const [exportBytes, setExportBytes] = useState<Uint8Array | null>(null);
   const [exportFilename, setExportFilename] = useState<string | null>(null);
   const [isRecoveryExport, setIsRecoveryExport] = useState(false);
@@ -113,6 +114,11 @@ export function WalkApp({ deps }: WalkAppProps) {
     saveState === 'save-failed' ||
     walk?.status === 'paused' ||
     committedCount + inFlightCount >= MAX_PHOTOS;
+
+  // Mutual exclusion (playbook: prevent import/export/clear races; disable
+  // mutations during snapshot/export for this MVP).
+  const exportLocked = inFlightCount > 0 || clearing || removingId !== null;
+  const mutationsLocked = exporting;
 
   const captureDisabledReason = useMemo(() => {
     if (readOnly) return 'This tab is read-only.';
@@ -235,7 +241,7 @@ export function WalkApp({ deps }: WalkAppProps) {
 
   const retryFailedImport = (key: string) => {
     const item = failedImports.find((f) => f.key === key);
-    if (!item || readOnly || additionsBlocked) return;
+    if (!item || readOnly || additionsBlocked || mutationsLocked) return;
     setRetryingImportKey(key);
     void processFilesInOrder([item.file])?.finally(() => setRetryingImportKey(null));
   };
@@ -298,6 +304,7 @@ export function WalkApp({ deps }: WalkAppProps) {
     setExportFilename(null);
     setExportError(null);
     setExportProgress(null);
+    setExportWarnings([]);
     setIsRecoveryExport(false);
   };
 
@@ -310,35 +317,39 @@ export function WalkApp({ deps }: WalkAppProps) {
       setExportError(null);
       resetExportArtifact();
 
-      const sorted = [...photos].sort((a, b) => a.order - b.order);
-      const snapshot: ExportSnapshot = {
-        jobId: walk.jobId || jobIdInput,
-        walkCreatedAt: walk.createdAt,
-        photos: await Promise.all(
-          sorted.map(async (p) => ({
-            order: p.order + 1,
-            jpegBytes: await blobToArrayBuffer(p.blob),
-            width: p.width,
-            height: p.height,
-            note: p.note,
-          })),
-        ),
-      };
-
       try {
+        // Snapshot built inside try: a blob read failure must leave the
+        // export retryable, not permanently busy.
+        const sorted = [...photos].sort((a, b) => a.order - b.order);
+        const snapshot: ExportSnapshot = {
+          // The input is the live source of truth for edits (walk.jobId only
+          // refreshes on hydration/create), including a cleared ID.
+          jobId: jobIdInput,
+          walkCreatedAt: walk.createdAt,
+          photos: await Promise.all(
+            sorted.map(async (p) => ({
+              order: p.order + 1,
+              jpegBytes: await blobToArrayBuffer(p.blob),
+              width: p.width,
+              height: p.height,
+              note: p.note,
+            })),
+          ),
+        };
+
         setIsRecoveryExport(recovery);
         const result = await deps.renderWalkPdf(snapshot, (info) => setExportProgress(info));
         setExportBytes(result.bytes);
         setExportFilename(result.filename);
-        exportInFlightRef.current = false;
-        setExporting(false);
+        setExportWarnings(result.warnings ?? []);
       } catch (err) {
-        exportInFlightRef.current = false;
-        setExporting(false);
         if (err instanceof PdfExportError && err.code === 'worker') {
           return;
         }
         setExportError(err instanceof Error ? err.message : 'Export failed');
+      } finally {
+        exportInFlightRef.current = false;
+        setExporting(false);
       }
     },
     [walk, photos, jobIdInput, deps],
@@ -365,6 +376,7 @@ export function WalkApp({ deps }: WalkAppProps) {
 
   const handleDownload = () => {
     if (!exportBytes || !exportFilename) return;
+    if (exportObjectUrlRef.current) URL.revokeObjectURL(exportObjectUrlRef.current);
     const url = URL.createObjectURL(
       new Blob([new Uint8Array(exportBytes)], { type: 'application/pdf' }),
     );
@@ -417,7 +429,7 @@ export function WalkApp({ deps }: WalkAppProps) {
         retrying={retrySaveBusy}
       />
 
-      <JobIdField value={jobIdInput} onChange={handleJobIdChange} disabled={readOnly} />
+      <JobIdField value={jobIdInput} onChange={handleJobIdChange} disabled={readOnly || mutationsLocked} />
 
       <CapacityIndicator committedCount={committedCount} inFlightCount={inFlightCount} />
 
@@ -432,7 +444,7 @@ export function WalkApp({ deps }: WalkAppProps) {
         libraryInputRef={libraryRef}
         onCameraChange={handleFileSelection}
         onLibraryChange={handleFileSelection}
-        disabled={additionsBlocked}
+        disabled={additionsBlocked || mutationsLocked}
         disabledReason={captureDisabledReason}
       />
 
@@ -447,7 +459,7 @@ export function WalkApp({ deps }: WalkAppProps) {
           status={walkStatus}
           onPause={handlePause}
           onResume={handleResume}
-          disabled={readOnly}
+          disabled={readOnly || mutationsLocked}
           busy={pauseBusy}
         />
       ) : null}
@@ -456,7 +468,7 @@ export function WalkApp({ deps }: WalkAppProps) {
         photos={photos}
         onNoteChange={handleNoteChange}
         onRemove={handleRemove}
-        disabled={readOnly}
+        disabled={readOnly || mutationsLocked}
         removingId={removingId}
       />
 
@@ -467,17 +479,18 @@ export function WalkApp({ deps }: WalkAppProps) {
         exportProgress={exportProgress}
         exportError={exportError}
         exportReady={exportFilename ? { filename: exportFilename } : null}
+        exportWarnings={exportWarnings}
         onShare={handleShare}
         onDownload={handleDownload}
         onDismissExport={resetExportArtifact}
         onRetryExport={() => runExport(isRecoveryExport)}
-        disabled={readOnly}
+        disabled={readOnly || exportLocked}
         exportLabel={isRecoveryExport ? 'Recovery export PDF' : 'Export PDF'}
       />
 
       <button
         type="button"
-        disabled={readOnly || !walk}
+        disabled={readOnly || !walk || mutationsLocked || inFlightCount > 0}
         onClick={() => setClearOpen(true)}
         className="border border-black px-3 py-2 text-sm focus:outline focus:outline-2 focus:outline-offset-2 focus:outline-black disabled:opacity-50"
       >

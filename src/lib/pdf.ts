@@ -49,12 +49,12 @@ async function loadFontBytes(): Promise<ArrayBuffer> {
   return fontBytesPromise;
 }
 
-let exportInFlight: Promise<{ bytes: Uint8Array; filename: string }> | null = null;
+let exportInFlight: Promise<{ bytes: Uint8Array; filename: string; warnings?: string[] }> | null = null;
 
 export async function renderWalkPdf(
   snapshot: ExportSnapshot,
   onProgress?: ExportProgress,
-): Promise<{ bytes: Uint8Array; filename: string }> {
+): Promise<{ bytes: Uint8Array; filename: string; warnings?: string[] }> {
   if (exportInFlight) {
     throw new PdfExportError('worker', 'PDF export already in progress');
   }
@@ -88,7 +88,7 @@ export async function renderWalkPdf(
     });
 
     try {
-      return await new Promise<{ bytes: Uint8Array; filename: string }>((resolve, reject) => {
+      return await new Promise<{ bytes: Uint8Array; filename: string; warnings?: string[] }>((resolve, reject) => {
         const onMessage = (event: MessageEvent<PdfWorkerOutgoing>) => {
           const msg = event.data;
           if (msg.type === 'progress') {
@@ -98,7 +98,7 @@ export async function renderWalkPdf(
           worker.removeEventListener('message', onMessage);
           worker.terminate();
           if (msg.type === 'done') {
-            resolve({ bytes: new Uint8Array(msg.bytes), filename: msg.filename });
+            resolve({ bytes: new Uint8Array(msg.bytes), filename: msg.filename, warnings: msg.warnings });
           } else {
             reject(new PdfExportError(msg.code, msg.message));
           }
