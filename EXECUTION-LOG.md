@@ -97,6 +97,18 @@ no-options canary launched to isolate whether ANY cursor child still works.
 | Offline/acceptance | not launched (cap) | pending |
 | Vercel setup (side) | `...delegate-task%3A1177c890-d54c-433f-8b79-c7a3334f154c` | **FAILED** (provider, mid-run) |
 
+**Relaunch (user-approved substitution):** user chose Codex `gpt-6.1-sol` @ reasoningEffort `high`
+for the review wave after the Cursor block. All three launched successfully against `974f4aa`:
+
+| Review | Task ID | Status |
+| --- | --- | --- |
+| Persistence | `...delegate-task%3A5b943500-245e-44ad-b199-95214e80c883` | running |
+| PDF + images | `...delegate-task%3Ad8c2d691-0114-4c08-b1d8-c64b6e6361d9` | running |
+| Offline/acceptance | `...delegate-task%3A85c5af74-6a59-4f4d-9dc7-1b638b40d0ba` | running |
+
+**Vercel:** coordinator runs `npx vercel login` directly (CLI 65.16.0, device flow —
+`https://vercel.com/oauth/device?user_code=JVPH-RQKB` given to the user; polling in background).
+
 ## Integration / review / deployment
 
 (pending)
