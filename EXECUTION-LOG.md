@@ -152,6 +152,70 @@ export verified — line y positions 425→415→405 (correct top-down order), a
 
 Persistence + offline/acceptance reviews: still running.
 
-## Integration / review / deployment
+## Review wave 2 remaining results + fixes (`bc72db7`, deployment 3)
 
-(pending)
+**Persistence review** (gpt-6.1-sol): 10 findings (9 major) with scratch-probe evidence — all fixed:
+- save-failed now LATCHED (enqueues while blocked can't hide the banner / unblock additions / stall)
+- photo order assigned inside the append transaction (removal/retry races can't gap numbering)
+- writer lock FAILS CLOSED without Web Locks (was: per-tab memory fallback → two writable tabs);
+  lock manager injectable; releaseWriterLock for StrictMode remounts
+- pause rejects promptly when the queue is blocked (was: spun busy forever)
+- retry save reconciles UI from committed data (recovered photos actually appear)
+- note edits revert on removed-photo precondition; removal merges (newer notes survive)
+- job ID persists immediately (no debounce ACK window) + syncs walk state; pre-walk typed IDs show
+  'Unsaved changes'; StrictMode lock release; storage reminder text; dialog autoFocus (minor)
+
+**Offline/acceptance review** (gpt-6.1-sol): 9 findings — 5 overlapped the above/PDF review (fixed);
+plus: offline font-error messaging clarified; clear-dialog focus (autoFocus Cancel); storage reminder.
+Privacy audit clean: **no off-device transmission path** (source, bundle, dependency audit). Capacity
+rules verified independently (45+4/45+4 consecutive selections; store cap at 50; no bypass).
+
+**Limitations recorded at deployment 3 (see final verification below for resolutions):**
+- A failed-then-recovered append can leave its failed-import entry listed; retrying that file then
+  creates a visible duplicate (removable) — recovery via "Retry save" is authoritative
+- Worker bundle relies on HTTP cache offline (warmed at boot); font warms at boot with clear retry error
+- Saved walk = IndexedDB only (browser storage eviction clears it) — reminder shown in UI
+
+**Suite: 88/88 tests, typecheck clean, build green. Deployment 3 live from `bc72db7`.**
+
+## Final coordinator verification and deployment 4 (`0f317c0`)
+
+Run resumed after provider interruption. All three replacement review delegates are completed,
+with no pending child work. No new delegates were launched.
+
+Final verification reproduced and fixed defects in deployment 3:
+- Real Web Locks has no `release()` method. Corrected the test helper to release when the callback
+  settles, observed the existing release test fail, then fixed callback completion/cancellation and
+  serialized component remount cleanup. Verified with real Chromium locks and StrictMode.
+- First live export offline failed despite warmed worker HTTP cache. Replaced worker warm-up with
+  bundled inline worker code. Fresh production session then passed its FIRST export offline.
+- Resolved the previously documented duplicate failed-import retry by correlating attempted photo
+  IDs with committed recovery records. Actual-store quota-injection UI regression failed before the
+  fix and passed afterward.
+
+Verification: **90/90 tests**, TypeScript/build green, diff check clean. Vite bundle warning remains.
+Production project confirmed as `nmasters52s-projects/pik-2-pdf`; deployment
+`dpl_Enm3TdfV7oPCvDbbgu4fLP7dZWzM` READY at https://pik-2-pdf.vercel.app.
+Served script `/assets/index-CpQtc4b2.js`; app source `0f317c0`.
+
+Fresh live Chromium 155: online boot, offline before first import/export, 50 imports, full 200-char
+accented/multiline note, pause/resume, PDF download. Actual PDF: **787,824 bytes, 13 Letter pages,
+50 images, consecutive 1–50, correct footers, full note**. First/last rendered pages inspected.
+Connected reload and tab close/reopen restored 50 photos, note, job ID, and pause state. Second tab
+was read-only. No data transmission observed during offline operations.
+
+Artifacts: `output/playwright/final-offline-50.pdf`, `pdf-verification.json`, `first-page.png`,
+`last-page.png`, `final-flow.js`; ignored local files. Full current-state details in `HANDOFF.md`.
+
+Engineering handoff complete. **Final iPad acceptance remains pending**, including updated-build
+camera/library/Files/offline/recovery checks and private internal-upload pass/fail. The supplied
+14.5 MB iPad PDF is deployment-1 evidence, not certification of deployment 4.
+
+### Completed review receipts
+
+- Persistence: <t3-thread://v2/011dcf81-1f49-4cdb-96ea-ff47d4e31169/thread:delegated-task:command%3Amcp%3Ace2b6a54-3e8f-404e-ad11-d641e3b7cdb5%3Adelegate-task%3A5b943500-245e-44ad-b199-95214e80c883>
+  Task ID: `node:delegated-task:command%3Amcp%3Ace2b6a54-3e8f-404e-ad11-d641e3b7cdb5%3Adelegate-task%3A5b943500-245e-44ad-b199-95214e80c883`. Completed, no pending child work.
+- PDF/images: <t3-thread://v2/011dcf81-1f49-4cdb-96ea-ff47d4e31169/thread:delegated-task:command%3Amcp%3Ace2b6a54-3e8f-404e-ad11-d641e3b7cdb5%3Adelegate-task%3Ad8c2d691-0114-4c08-b1d8-c64b6e6361d9>
+  Task ID: `node:delegated-task:command%3Amcp%3Ace2b6a54-3e8f-404e-ad11-d641e3b7cdb5%3Adelegate-task%3Ad8c2d691-0114-4c08-b1d8-c64b6e6361d9`. Completed, no pending child work.
+- Offline/acceptance: <t3-thread://v2/011dcf81-1f49-4cdb-96ea-ff47d4e31169/thread:delegated-task:command%3Amcp%3Ace2b6a54-3e8f-404e-ad11-d641e3b7cdb5%3Adelegate-task%3A85c5af74-6a59-4f4d-9dc7-1b638b40d0ba>
+  Task ID: `node:delegated-task:command%3Amcp%3Ace2b6a54-3e8f-404e-ad11-d641e3b7cdb5%3Adelegate-task%3A85c5af74-6a59-4f4d-9dc7-1b638b40d0ba`. Completed, no pending child work.
