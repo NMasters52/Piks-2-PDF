@@ -18,15 +18,17 @@
 // - removePhoto removes data + metadata transactionally and renumbers the
 //   remaining photos consecutively in the same transaction.
 // - setStatus('paused') resolves only after pending saves have drained or
-//   failed (pause waits for pending saves before reporting success).
+//   failed (pause waits for pending saves before resolving).
 // - clearWalk clears walk + photos transactionally; caller confirms first;
 //   visible state resets only after success.
-// - Exclusive writer: acquireWriterLock() uses the Web Locks API ('pik-2-pdf'
- //  exclusive lock). Resolves false when another tab holds it → UI goes
+// - Exclusive writer: acquireWriterLock() uses the Web Locks API ('pik-2-pdf-writer'
+//   exclusive lock). Resolves false when another tab holds it → UI goes
 //   read-only. Must be tested.
 // - Recovery guarantee: the most recent acknowledged 'saved' state. getCommittedSnapshot() exists for recovery export.
 
+import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
 import type { HydrationResult, SaveState, Walk, WalkPhoto, WalkStatus } from '../types/walk';
+import { MAX_PHOTOS } from '../types/walk';
 
 export type StorageErrorCode = 'quota' | 'transaction' | 'locked' | 'unknown';
 
@@ -76,10 +78,449 @@ export interface WalkStore {
   retryPendingSaves(): Promise<void>;
 }
 
-/** FOUNDATION STUB — storage agent replaces the internals of this module,
- *  keeping every exported signature identical. */
+const DB_NAME = 'pik-2-pdf';
+const DB_VERSION = 1;
+const WRITER_LOCK = 'pik-2-pdf-writer';
+
+interface Pik2PdfDbSchema extends DBSchema {
+  walks: {
+    key: string;
+    value: Walk;
+  };
+  photos: {
+    key: string;
+    value: WalkPhoto;
+    indexes: { byWalkId: string };
+  };
+}
+
+/** Test-only hooks for fault injection (vitest). Not part of the WalkStore contract. */
+export type DbTestHooks = {
+  /** Called inside appendPhoto transaction before put; throw to simulate failure. */
+  beforeAppendPhotoPut?: (context: { photoId: string; committedCount: number }) => void;
+  /** Called before any queued mutation runs its IDB transaction. */
+  beforeQueuedTransaction?: (op: string) => void | Promise<void>;
+};
+
+let dbTestHooks: DbTestHooks = {};
+
+/** @internal For db.test.ts fault injection only. */
+export function setDbTestHooks(hooks: DbTestHooks): void {
+  dbTestHooks = hooks;
+}
+
+/** @internal Reset test hooks after each test. */
+export function resetDbTestHooks(): void {
+  dbTestHooks = {};
+}
+
+/**
+ * When `navigator.locks` is unavailable (e.g. jsdom), a process-wide in-memory
+ * holder approximates an exclusive writer lock so dual-tab behavior is testable.
+ * Real browsers use the Web Locks API.
+ */
+/** In-memory exclusive writer when `navigator.locks` is missing (jsdom). */
+const memoryLock = {
+  taken: false,
+};
+
+type LockManagerLike = {
+  request<T>(
+    name: string,
+    options: { mode: 'exclusive'; ifAvailable?: boolean },
+    callback: (lock: unknown) => Promise<T> | T,
+  ): Promise<T>;
+};
+
+function getLockManager(): LockManagerLike | null {
+  if (typeof navigator !== 'undefined' && navigator.locks) {
+    return navigator.locks as unknown as LockManagerLike;
+  }
+  return null;
+}
+
+/** Release in-memory writer lock between tests (jsdom fallback only). */
+export function resetWriterLockForTests(): void {
+  memoryLock.taken = false;
+}
+
+let sharedDbPromise: Promise<IDBPDatabase<Pik2PdfDbSchema>> | null = null;
+
+async function closeDatabase(): Promise<void> {
+  if (sharedDbPromise) {
+    const db = await sharedDbPromise;
+    db.close();
+    sharedDbPromise = null;
+  }
+}
+
+function openDatabase(): Promise<IDBPDatabase<Pik2PdfDbSchema>> {
+  if (!sharedDbPromise) {
+    sharedDbPromise = openDB<Pik2PdfDbSchema>(DB_NAME, DB_VERSION, {
+      upgrade(db, oldVersion, _newVersion, transaction) {
+        if (oldVersion < 1) {
+          db.createObjectStore('walks', { keyPath: 'id' });
+          const photos = db.createObjectStore('photos', { keyPath: 'id' });
+          photos.createIndex('byWalkId', 'walkId');
+        }
+        // Future: non-destructive migrations only — never drop stores here.
+        void transaction;
+      },
+    });
+  }
+  return sharedDbPromise;
+}
+
+/** @internal Reset DB connection singleton between tests. */
+export async function resetDbConnectionForTests(): Promise<void> {
+  await closeDatabase();
+}
+
+function toStorageError(err: unknown): StorageError {
+  if (err instanceof StorageError) return err;
+  if (err instanceof DOMException) {
+    if (err.name === 'QuotaExceededError') {
+      return new StorageError('quota', err.message, { cause: err });
+    }
+    if (err.name === 'AbortError' || err.name === 'TransactionInactiveError') {
+      return new StorageError('transaction', err.message, { cause: err });
+    }
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  return new StorageError('unknown', message, { cause: err });
+}
+
+function sortPhotos(photos: WalkPhoto[]): WalkPhoto[] {
+  return [...photos].sort((a, b) => a.order - b.order);
+}
+
+type QueueJob<T> = {
+  label: string;
+  run: () => Promise<T>;
+  resolve: (value: T) => void;
+  reject: (err: unknown) => void;
+};
+
+class WalkStoreImpl implements WalkStore {
+  private saveState: SaveState = 'saved';
+  private lastError: StorageError | undefined;
+  private listeners = new Set<(state: SaveState, error?: StorageError) => void>();
+  private pending: QueueJob<unknown>[] = [];
+  private running = false;
+  private blockedJob: QueueJob<unknown> | null = null;
+  private lockHold: Promise<void> | null = null;
+
+  private emit(state: SaveState, error?: StorageError) {
+    this.saveState = state;
+    this.lastError = error;
+    for (const listener of this.listeners) {
+      listener(state, error);
+    }
+  }
+
+  private emitCurrent(listener: (state: SaveState, error?: StorageError) => void) {
+    listener(this.saveState, this.lastError);
+  }
+
+  private enqueue<T>(label: string, run: () => Promise<T>): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const job: QueueJob<T> = { label, run, resolve, reject };
+      this.pending.push(job as QueueJob<unknown>);
+      this.emit('unsaved');
+      void this.pump();
+    });
+  }
+
+  private async pump(): Promise<void> {
+    if (this.running || this.blockedJob) return;
+    this.running = true;
+    try {
+      while (this.pending.length > 0 && !this.blockedJob) {
+        const job = this.pending.shift()!;
+        try {
+          const result = await job.run();
+          job.resolve(result);
+        } catch (err) {
+          const storageErr = toStorageError(err);
+          this.blockedJob = job;
+          job.reject(storageErr);
+          this.emit('save-failed', storageErr);
+          break;
+        }
+      }
+      if (!this.blockedJob && this.pending.length === 0) {
+        this.emit('saved');
+      }
+    } finally {
+      this.running = false;
+      if (!this.blockedJob && this.pending.length > 0) {
+        void this.pump();
+      }
+    }
+  }
+
+  async acquireWriterLock(): Promise<boolean> {
+    const locks = getLockManager();
+    if (!locks) {
+      if (memoryLock.taken) return false;
+      memoryLock.taken = true;
+      return true;
+    }
+    return new Promise<boolean>((resolve) => {
+      void locks
+        .request(WRITER_LOCK, { mode: 'exclusive', ifAvailable: true }, (lock) => {
+          if (!lock) {
+            resolve(false);
+            return undefined;
+          }
+          this.lockHold = new Promise<void>(() => {
+            // Held until tab/instance teardown.
+          });
+          resolve(true);
+          return this.lockHold;
+        })
+        .catch(() => resolve(false));
+    });
+  }
+
+  async hydrate(): Promise<HydrationResult> {
+    try {
+      const db = await openDatabase();
+      const walk = await this.readCurrentWalk(db);
+      if (!walk) return { status: 'empty' };
+      const photos = await this.readPhotosForWalk(db, walk.id);
+      return { status: 'ok', walk, photos: sortPhotos(photos) };
+    } catch (err) {
+      throw toStorageError(err);
+    }
+  }
+
+  createWalk(jobId: string): Promise<Walk> {
+    return this.enqueue('createWalk', async () => {
+      await dbTestHooks.beforeQueuedTransaction?.('createWalk');
+      const db = await openDatabase();
+      const existing = await this.readCurrentWalk(db);
+      if (existing) {
+        throw new StorageError('unknown', 'A walk already exists');
+      }
+      const now = Date.now();
+      const walk: Walk = {
+        id: crypto.randomUUID(),
+        jobId,
+        createdAt: now,
+        updatedAt: now,
+        status: 'active',
+      };
+      const tx = db.transaction('walks', 'readwrite');
+      await tx.store.put(walk);
+      await tx.done;
+      return walk;
+    });
+  }
+
+  async countPhotos(): Promise<number> {
+    const db = await openDatabase();
+    const walk = await this.readCurrentWalk(db);
+    if (!walk) return 0;
+    return db.transaction('photos').store.index('byWalkId').count(walk.id);
+  }
+
+  appendPhoto(photo: Omit<WalkPhoto, 'walkId'>): Promise<WalkPhoto> {
+    return this.enqueue('appendPhoto', async () => {
+      await dbTestHooks.beforeQueuedTransaction?.('appendPhoto');
+      const db = await openDatabase();
+      const walk = await this.readCurrentWalk(db);
+      if (!walk) {
+        throw new StorageError('unknown', 'No walk to append to');
+      }
+      const tx = db.transaction(['photos', 'walks'], 'readwrite');
+      const photoStore = tx.objectStore('photos');
+      const walkStore = tx.objectStore('walks');
+      const committedCount = await photoStore.index('byWalkId').count(walk.id);
+      if (committedCount >= MAX_PHOTOS) {
+        await tx.done;
+        throw new StorageError('quota', `Cannot exceed ${MAX_PHOTOS} photos`);
+      }
+      const record: WalkPhoto = { ...photo, walkId: walk.id };
+      dbTestHooks.beforeAppendPhotoPut?.({ photoId: record.id, committedCount });
+      await photoStore.put(record);
+      const updatedWalk: Walk = { ...walk, updatedAt: Date.now() };
+      await walkStore.put(updatedWalk);
+      await tx.done;
+      return record;
+    });
+  }
+
+  removePhoto(photoId: string): Promise<WalkPhoto[]> {
+    return this.enqueue('removePhoto', async () => {
+      await dbTestHooks.beforeQueuedTransaction?.('removePhoto');
+      const db = await openDatabase();
+      const walk = await this.readCurrentWalk(db);
+      if (!walk) {
+        throw new StorageError('unknown', 'No walk');
+      }
+      const tx = db.transaction(['photos', 'walks'], 'readwrite');
+      const photoStore = tx.objectStore('photos');
+      const walkStore = tx.objectStore('walks');
+      const existing = await photoStore.get(photoId);
+      if (!existing || existing.walkId !== walk.id) {
+        await tx.done;
+        return this.readPhotosCommitted(db, walk.id);
+      }
+      await photoStore.delete(photoId);
+      const remaining = sortPhotos(
+        await photoStore.index('byWalkId').getAll(walk.id),
+      );
+      for (let i = 0; i < remaining.length; i++) {
+        const next = { ...remaining[i], order: i };
+        remaining[i] = next;
+        await photoStore.put(next);
+      }
+      await walkStore.put({ ...walk, updatedAt: Date.now() });
+      await tx.done;
+      return remaining;
+    });
+  }
+
+  updateNote(photoId: string, note: string): Promise<void> {
+    return this.enqueue('updateNote', async () => {
+      await dbTestHooks.beforeQueuedTransaction?.('updateNote');
+      const db = await openDatabase();
+      const walk = await this.readCurrentWalk(db);
+      if (!walk) throw new StorageError('unknown', 'No walk');
+      const tx = db.transaction(['photos', 'walks'], 'readwrite');
+      const photo = await tx.objectStore('photos').get(photoId);
+      if (!photo || photo.walkId !== walk.id) {
+        throw new StorageError('unknown', 'Photo not found');
+      }
+      await tx.objectStore('photos').put({ ...photo, note });
+      await tx.objectStore('walks').put({ ...walk, updatedAt: Date.now() });
+      await tx.done;
+    });
+  }
+
+  updateJobId(jobId: string): Promise<void> {
+    return this.enqueue('updateJobId', async () => {
+      await dbTestHooks.beforeQueuedTransaction?.('updateJobId');
+      const db = await openDatabase();
+      const walk = await this.readCurrentWalk(db);
+      if (!walk) throw new StorageError('unknown', 'No walk');
+      const tx = db.transaction('walks', 'readwrite');
+      await tx.store.put({ ...walk, jobId, updatedAt: Date.now() });
+      await tx.done;
+    });
+  }
+
+  setStatus(status: WalkStatus): Promise<void> {
+    const waitForIdle =
+      status === 'paused'
+        ? new Promise<void>((resolve) => {
+            const check = () => {
+              if (this.blockedJob || this.pending.length > 0 || this.running) {
+                setTimeout(check, 0);
+                return;
+              }
+              resolve();
+            };
+            check();
+          })
+        : Promise.resolve();
+    return waitForIdle.then(() =>
+      this.enqueue('setStatus', async () => {
+        await dbTestHooks.beforeQueuedTransaction?.('setStatus');
+        const db = await openDatabase();
+        const walk = await this.readCurrentWalk(db);
+        if (!walk) throw new StorageError('unknown', 'No walk');
+        const tx = db.transaction('walks', 'readwrite');
+        await tx.store.put({ ...walk, status, updatedAt: Date.now() });
+        await tx.done;
+      }),
+    );
+  }
+
+  clearWalk(): Promise<void> {
+    return this.enqueue('clearWalk', async () => {
+      await dbTestHooks.beforeQueuedTransaction?.('clearWalk');
+      const db = await openDatabase();
+      const walk = await this.readCurrentWalk(db);
+      if (!walk) return;
+      const tx = db.transaction(['photos', 'walks'], 'readwrite');
+      const photoStore = tx.objectStore('photos');
+      const photos = await photoStore.index('byWalkId').getAll(walk.id);
+      for (const p of photos) {
+        await photoStore.delete(p.id);
+      }
+      await tx.objectStore('walks').delete(walk.id);
+      await tx.done;
+    });
+  }
+
+  subscribeSaveState(listener: (state: SaveState, error?: StorageError) => void): () => void {
+    this.listeners.add(listener);
+    this.emitCurrent(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  async retryPendingSaves(): Promise<void> {
+    if (!this.blockedJob) {
+      if (this.pending.length === 0 && !this.running) {
+        this.emit('saved');
+      }
+      return;
+    }
+    const job = this.blockedJob;
+    this.blockedJob = null;
+    this.emit('unsaved');
+    this.running = true;
+    try {
+      const result = await job.run();
+      job.resolve(result);
+      while (this.pending.length > 0) {
+        const next = this.pending.shift()!;
+        try {
+          const nextResult = await next.run();
+          next.resolve(nextResult);
+        } catch (err) {
+          const storageErr = toStorageError(err);
+          this.blockedJob = next;
+          next.reject(storageErr);
+          this.emit('save-failed', storageErr);
+          return;
+        }
+      }
+      this.emit('saved');
+    } catch (err) {
+      const storageErr = toStorageError(err);
+      this.blockedJob = job;
+      job.reject(storageErr);
+      this.emit('save-failed', storageErr);
+    } finally {
+      this.running = false;
+    }
+  }
+
+  private async readCurrentWalk(db: IDBPDatabase<Pik2PdfDbSchema>): Promise<Walk | undefined> {
+    const all = await db.transaction('walks').store.getAll();
+    return all[0];
+  }
+
+  private async readPhotosForWalk(
+    db: IDBPDatabase<Pik2PdfDbSchema>,
+    walkId: string,
+  ): Promise<WalkPhoto[]> {
+    return sortPhotos(await db.transaction('photos').store.index('byWalkId').getAll(walkId));
+  }
+
+  private async readPhotosCommitted(
+    db: IDBPDatabase<Pik2PdfDbSchema>,
+    walkId: string,
+  ): Promise<WalkPhoto[]> {
+    return this.readPhotosForWalk(db, walkId);
+  }
+}
+
 export function createWalkStore(): WalkStore {
-  throw new Error(
-    'NOT IMPLEMENTED: createWalkStore is the storage agent’s task (src/lib/db.ts). Keep the WalkStore API.',
-  );
+  return new WalkStoreImpl();
 }
