@@ -25,6 +25,8 @@ export type ExportSnapshot = {
 
 export type ExportProgress = (info: { photosDone: number; totalPhotos: number }) => void;
 
+const WORKER_URL = new URL('../workers/pdf.worker.ts', import.meta.url);
+
 let fontBytesCache: ArrayBuffer | null = null;
 let fontBytesPromise: Promise<ArrayBuffer> | null = null;
 
@@ -80,7 +82,7 @@ export async function renderWalkPdf(
       fontBytes,
     };
 
-    const worker = new Worker(new URL('../workers/pdf.worker.ts', import.meta.url), {
+    const worker = new Worker(WORKER_URL, {
       type: 'module',
     });
 
@@ -124,5 +126,13 @@ export async function renderWalkPdf(
     exportInFlight = null;
   }
 }
+
+// Offline-while-open contract (playbook): export code, worker, and fonts must
+// be ready while the app is online, because the first export may happen after
+// connectivity is gone. The worker bundle and font are immutable hashed
+// assets; fetching each once at boot populates the HTTP cache so the first
+// export needs no network. Failures are non-fatal — a later export retries.
+void loadFontBytes().catch(() => undefined);
+void fetch(WORKER_URL.href).catch(() => undefined);
 
 export { buildPdfFilename };

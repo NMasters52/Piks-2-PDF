@@ -24,7 +24,8 @@
 // - Exclusive writer: acquireWriterLock() uses the Web Locks API ('pik-2-pdf-writer'
 //   exclusive lock). Resolves false when another tab holds it → UI goes
 //   read-only. Must be tested.
-// - Recovery guarantee: the most recent acknowledged 'saved' state. getCommittedSnapshot() exists for recovery export.
+// - Recovery guarantee: the most recent acknowledged 'saved' state. hydrate()
+//   re-reads committed data for recovery export (no separate snapshot method).
 
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
 import type { HydrationResult, SaveState, Walk, WalkPhoto, WalkStatus } from '../types/walk';
