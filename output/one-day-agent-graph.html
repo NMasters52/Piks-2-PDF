@@ -1,0 +1,31 @@
+<!doctype html><html><head><style>
+#plan{display:grid;gap:8px;color:var(--foreground);font-family:var(--font-sans)}
+.stage{text-align:center;padding:12px 0;border-bottom:1px solid var(--border)}
+.lanes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.lane{padding:12px 0;border-top:1px solid var(--border);text-align:center}
+small{display:block;color:var(--muted-foreground);margin-top:6px}
+.arrow{text-align:center;color:var(--muted-foreground)}
+@media(max-width:480px){.lanes{grid-template-columns:1fr}}
+</style></head><body><main id="plan" aria-label="Proposed one-day agent dependency graph">
+<div class="stage">Coordinator: verify providers + one launch test per model<small>Grok disabled • Composer 2.5 ID unverified • no agents launched</small></div>
+<div class="arrow">↓ only after both launch tests pass</div>
+<div class="stage">Coordinator: commit scaffold + shared types + module contracts<small>One owner for dependencies and lockfile</small></div>
+<div class="arrow">↓ parallel build wave • separate worktrees</div>
+<div class="lanes">
+<div class="lane">Composer A<small>Database + save/recovery tests</small></div>
+<div class="lane">Composer B<small>Image processing + PDF tests</small></div>
+<div class="lane">Composer C<small>Plain UI + capture controls</small></div>
+</div>
+<div class="arrow">↓ all three feed one integrated commit</div>
+<div class="stage">Coordinator: integrate + run complete photo-to-PDF flow</div>
+<div class="arrow">↓ parallel review wave • same integrated commit</div>
+<div class="lanes">
+<div class="lane">Grok A<small>Persistence + failure review</small></div>
+<div class="lane">Grok B<small>PDF + image correctness review</small></div>
+<div class="lane">Grok C<small>Offline + acceptance review</small></div>
+</div>
+<div class="arrow">↓ findings feed fixes; user test can start on the integrated build</div>
+<div class="stage">User: iPad + private upload test<small>Coordinator fixes confirmed defects and reruns affected checks</small></div>
+<div class="arrow">↓</div>
+<div class="stage">Coordinator: final verified build + handoff</div>
+</main></body></html>
