@@ -18,12 +18,12 @@ One-day MVP build, 2026-11-14. Orchestration agent owns this file; updated at ea
 
 ## Launch tests (read-only, worktree isolation)
 
-| Model | Task ID | Status |
+| Model | Task ID | Result |
 | --- | --- | --- |
-| composer-2.5 | `node:delegated-task:...delegate-task%3Acad6c1f7-9354-474f-a5b9-5f955d0bb0bf` | running |
-| grok-4.7 | `node:delegated-task:...delegate-task%3A20f637dc-5bab-4956-a876-90ec8dc9d395` | running |
+| composer-2.5 | `node:delegated-task:...delegate-task%3Acad6c1f7-9354-474f-a5b9-5f955d0bb0bf` | **PASS** — ran shell in worktree `t3-14a53100` @ `f54e170`, verbatim limit/offline quotes, clean tree |
+| grok-4.7 | `node:delegated-task:...delegate-task%3A20f637dc-5bab-4956-a876-90ec8dc9d395` | **PASS** — ran shell in worktree `t3-63508344` @ `f54e170`, verbatim quotes, clean tree |
 
-Both launch results confirmed `providerInstanceId: cursor` with requested model + string options.
+Both launch results confirmed `providerInstanceId: cursor` with requested model + string options. **Launch gate: PASS.**
 
 ## Foundation
 
@@ -36,7 +36,13 @@ Both launch results confirmed `providerInstanceId: cursor` with requested model 
 
 ## Build wave
 
-(pending launch tests → three Composer tasks: storage `src/lib/db.ts`, images/PDF `src/lib/images.ts`+`src/lib/pdf*`+`src/workers/`, UI `src/app/`+`src/components/`)
+Running (3 × cursor/composer-2.5, worktree isolation, from foundation commit `5cab70d`; each must `npm ci`, keep typecheck/test/build green, return commit + evidence):
+
+| Task | Task ID | Owned files |
+| --- | --- | --- |
+| Storage | `...delegate-task%3A74318402-2ab4-47c2-b502-da28caacbc46` | `src/lib/db.ts` + focused tests |
+| Images + PDF | `...delegate-task%3A8536b145-bda0-4ca1-b08f-d1b619e5083a` | `src/lib/images.ts`, `src/lib/pdf/layout.ts`, `src/lib/pdf.ts`, `src/workers/pdf.worker.ts` + tests (pdfjs-verified) |
+| UI | `...delegate-task%3Aeb2bec3d-1960-47cb-98ce-cc70a25e6c1d` | `src/app/`, `src/components/`, `src/index.css` + interaction tests |
 
 ## Integration / review / deployment
 
