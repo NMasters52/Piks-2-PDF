@@ -109,6 +109,19 @@ for the review wave after the Cursor block. All three launched successfully agai
 **Vercel:** coordinator runs `npx vercel login` directly (CLI 65.16.0, device flow —
 `https://vercel.com/oauth/device?user_code=JVPH-RQKB` given to the user; polling in background).
 
+## Deployment 1 (iPad-testable build)
+
+- Account: `nmasters52` (device login approved by user); project `pik-2-pdf` (prj_wV6BS7LL14DEjJEBIaOUQvdOwcEP)
+- **Production URL: https://pik-2-pdf.vercel.app** (HSTS on; immutable hashed assets)
+- Source: repo HEAD `1a64c27` at deploy; app code last changed `ce2f22a`; cloud build by Vercel
+  (served bundle hash differs from local by build env only)
+- Verified on the live URL: app boots, one photo upload → normalized 1600×1200 → IndexedDB commit →
+  "Saved"; worker chunk + font assets 200 (font fetched at boot for offline export)
+- Earlier browser-verified evidence (localhost, same code): 50 photos → 13 pages (771KB), all
+  contract checks passed; downloads produce correct `Cabinet-Walk_<id>_<date>.pdf` filenames
+- **Field checkpoint: PENDING — user tests on iPad (capture, library import, note, save to Files,
+  orientation/numbering/notes inspection, representative 50-photo export + private upload)**
+
 ## Integration / review / deployment
 
 (pending)
