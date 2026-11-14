@@ -40,22 +40,41 @@ Running (3 × cursor/composer-2.5, worktree isolation, from foundation commit `5
 
 | Task | Task ID | Owned files |
 | --- | --- | --- |
-| Storage | `...delegate-task%3A74318402-2ab4-47c2-b502-da28caacbc46` | `src/lib/db.ts` + focused tests — **running** |
-| Images + PDF | `...delegate-task%3A8536b145-bda0-4ca1-b08f-d1b619e5083a` | `src/lib/images.ts`, `src/lib/pdf/layout.ts`, `src/lib/pdf.ts`, `src/workers/pdf.worker.ts` — **running** |
-| UI | `...delegate-task%3Aeb2bec3d-1960-47cb-98ce-cc70a25e6c1d` | `src/app/`, `src/components/`, `src/index.css` — **DONE** |
+| Storage | `...delegate-task%3A74318402-2ab4-47c2-b502-da28caacbc46` | `src/lib/db.ts` — **DONE** `3d79aa8` |
+| Images + PDF | `...delegate-task%3A8536b145-bda0-4ca1-b08f-d1b619e5083a` | `src/lib/images.ts`, `src/lib/pdf/*`, `src/workers/` — **DONE** `8ed6db6` |
+| UI | `...delegate-task%3Aeb2bec3d-1960-47cb-98ce-cc70a25e6c1d` | `src/app/`, `src/components/`, `src/index.css` — **DONE** `51c909c` |
 
-### Integrated: UI (delegate branch `t3/ipad-cabinet-pdf-flow` @ `51c909c`)
+All three merged into `main`; union verified: typecheck clean, **78/78 tests**, build green.
 
-- Merged into `main` (merge commit on top of `d913848`); only owned files touched.
-- Verified in coordinator checkout: typecheck clean, 32/32 tests pass, production build green (236.97 kB JS).
-- Full flow implemented: job ID, camera/library inputs, ordered serialized imports with per-file retry,
-  capacity gate (50, full-selection reject with spaces remaining, in-flight reservation), notes+counter,
-  pause/resume, save states with failure banner + retry + recovery export, read-only second tab,
-  export single-flight/progress/share/download, clear confirmation.
-- Integration watch-point: UI swallows `PdfExportError` code `'worker'` (stub-era workaround) — must
-  reconcile with real `pdf.ts` error codes at integration (coordinator fix if needed).
-- Runtime end-to-end flow still blocked on storage + images/PDF implementations (real App defaults call
-  stubs that throw until those land).
+## Integration verification (real browser, production build served on :4173)
+
+Full flow driven end-to-end via preview automation. Bugs found and fixed during this phase:
+
+1. **Save-queue deadlock** (`6e8bd1b`): `updateJobId` before a walk exists threw 'No walk' →
+   `blockedJob` never cleared → first import hung at "importing…" forever. Fix: precondition misses
+   (`precondition: true` StorageErrors) reject their own mutation without blocking the queue; UI keeps
+   pre-walk job ID in state and applies it at `createWalk`. Regression tests added.
+2. **Worker chunk not emitted** (`ce2f22a`): `new Worker(WORKER_URL)` const indirection broke Vite's
+   `new Worker(new URL(...))` detection → every export failed with "Worker error". Fix: literal inline
+   pattern + boot-time warm construct. Also added offline warm-up (`04741d5`): font + worker fetched
+   at boot so first export needs no network (offline-while-open contract).
+
+Verified evidence (real Chromium, production bundle):
+
+- Normalize: 2000×1500 → 1600×1200 JPEG (aspect preserved), blob committed with walk atomically
+- Hydration across reload: photo, note (accents: `résumé — &`), job ID all restored; "Saved" only after commit
+- Capacity: 12-file selection with 11 spaces → rejected in full, exact message "That selection has 12
+  photos but only 11 spaces remain. Nothing was imported."; at 50/50 inputs disabled with explanation;
+  remove → 49 → inputs re-enabled; DB orders consecutive 0..49
+- Export (worker, real): 1 photo → 1 page (28.7KB); 50 photos → **13 pages** (789.6KB / 771KB after
+  rounding); pdfjs-verified: 50/50 images, footers "page X of 13" on all pages, header `J-77A · 2026-11-14`,
+  numbering 1–50 complete, accented note intact, no aspect anomalies
+- Download → real file `Cabinet-Walk_J-77A_2026-11-14.pdf` on disk (correct contract filename)
+- Pause/resume works; clear dialog: cancel preserves, confirm transactionally clears UI + DB
+- Single-flight export + retry path exercised (Worker error → Retry export → success)
+
+Side task: Vercel CLI setup delegate `...delegate-task%3A1177c890-d54c-433f-8b79-c7a3334f154c`
+(cursor/composer-2.5) — running; deployment blocked on its auth result + user `vercel login` confirmation.
 
 ## Integration / review / deployment
 
