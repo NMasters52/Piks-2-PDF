@@ -33,7 +33,12 @@ async function loadFontBytes(): Promise<ArrayBuffer> {
   if (!fontBytesPromise) {
     fontBytesPromise = fetch(fontUrl)
       .then((res) => {
-        if (!res.ok) throw new PdfExportError('font', `Font fetch failed: ${res.status}`);
+        if (!res.ok) {
+          throw new PdfExportError(
+            'font',
+            `PDF font not ready (fetch failed: ${res.status}) — go back online once and retry the export`,
+          );
+        }
         return res.arrayBuffer();
       })
       .then((buf) => {

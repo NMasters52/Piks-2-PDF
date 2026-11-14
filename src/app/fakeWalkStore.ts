@@ -89,6 +89,7 @@ export function createFakeWalkStore(options: FakeWalkStoreOptions = {}): FakeWal
     getPhotos: () => photos,
 
     acquireWriterLock: async () => writerLockGranted && !locked,
+    releaseWriterLock: async () => undefined,
 
     hydrate: async () => {
       if (!walk) return { status: 'empty' as const };

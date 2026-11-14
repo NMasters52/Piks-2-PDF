@@ -36,6 +36,7 @@ export function ClearWalkDialog({ open, onConfirm, onCancel, clearing }: ClearWa
             type="button"
             onClick={onCancel}
             disabled={clearing}
+            autoFocus
             className="border border-black px-3 py-2 text-sm focus:outline focus:outline-2 focus:outline-offset-2 focus:outline-black"
           >
             Cancel

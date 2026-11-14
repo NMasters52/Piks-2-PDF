@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { WalkStore } from '../lib/db';
+import { StorageError, type WalkStore } from '../lib/db';
 import { DecodeError } from '../lib/images';
 import { PdfExportError, type ExportSnapshot } from '../lib/pdf';
 import { CaptureControls } from '../components/CaptureControls';
@@ -42,7 +42,6 @@ export function WalkApp({ deps }: WalkAppProps) {
   const cameraRef = useRef<HTMLInputElement>(null);
   const libraryRef = useRef<HTMLInputElement>(null);
   const exportInFlightRef = useRef(false);
-  const jobIdTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const importChainRef = useRef<Promise<void>>(Promise.resolve());
 
   const [hydrating, setHydrating] = useState(true);
@@ -82,7 +81,11 @@ export function WalkApp({ deps }: WalkAppProps) {
 
     void (async () => {
       const writable = await nextStore.acquireWriterLock();
-      if (cancelled) return;
+      if (cancelled) {
+        // StrictMode remount: give the lock back so the live store can take it.
+        void nextStore.releaseWriterLock();
+        return;
+      }
       setReadOnly(!writable);
       const hydration = await nextStore.hydrate();
       if (cancelled) return;
@@ -103,6 +106,7 @@ export function WalkApp({ deps }: WalkAppProps) {
     return () => {
       cancelled = true;
       unsub?.();
+      void nextStore.releaseWriterLock();
       if (exportObjectUrlRef.current) URL.revokeObjectURL(exportObjectUrlRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mount once per store instance
@@ -142,13 +146,14 @@ export function WalkApp({ deps }: WalkAppProps) {
     (value: string) => {
       if (readOnly || !storeRef.current) return;
       // No walk yet: keep the value in state; ensureWalk() creates the walk
-      // with it. Calling updateJobId before the walk exists would be a
-      // precondition miss (and historically deadlocked the save queue).
+      // with it. The header shows 'Unsaved changes' for this pre-walk case.
       if (!walk) return;
-      if (jobIdTimerRef.current) clearTimeout(jobIdTimerRef.current);
-      jobIdTimerRef.current = setTimeout(() => {
-        void storeRef.current?.updateJobId(value).catch(() => undefined);
-      }, 300);
+      // Persist immediately (no debounce): the save queue is cheap for
+      // metadata, and an immediate 'unsaved' keeps the indicator honest.
+      void storeRef.current
+        .updateJobId(value)
+        .then(() => setWalk((w) => (w ? { ...w, jobId: value } : w)))
+        .catch(() => undefined);
     },
     [readOnly, walk],
   );
@@ -247,9 +252,23 @@ export function WalkApp({ deps }: WalkAppProps) {
   };
 
   const handleNoteChange = (photoId: string, note: string) => {
-    if (readOnly || !storeRef.current) return;
-    setPhotos((prev) => prev.map((p) => (p.id === photoId ? { ...p, note } : p)));
-    void storeRef.current.updateNote(photoId, note).catch(() => undefined);
+    if (readOnly || mutationsLocked || !storeRef.current) return;
+    let previous = '';
+    setPhotos((prev) =>
+      prev.map((p) => {
+        if (p.id === photoId) previous = p.note;
+        return p.id === photoId ? { ...p, note } : p;
+      }),
+    );
+    void storeRef.current.updateNote(photoId, note).catch((err) => {
+      // Precondition miss (photo removed elsewhere/earlier): revert the
+      // optimistic edit instead of showing a note that is not persisted.
+      if (err instanceof StorageError && err.precondition) {
+        setPhotos((cur) =>
+          cur.map((p) => (p.id === photoId ? { ...p, note: previous } : p)),
+        );
+      }
+    });
   };
 
   const handleRemove = async (photoId: string) => {
@@ -257,7 +276,14 @@ export function WalkApp({ deps }: WalkAppProps) {
     setRemovingId(photoId);
     try {
       const remaining = await storeRef.current.removePhoto(photoId);
-      setPhotos(remaining);
+      // Merge, don't replace: notes edited while the removal was pending must
+      // survive (they queue after the removal and commit newer values).
+      setPhotos((prev) =>
+        remaining.map((r) => {
+          const newer = prev.find((p) => p.id === r.id);
+          return newer ? { ...r, note: newer.note } : r;
+        }),
+      );
     } finally {
       setRemovingId(null);
     }
@@ -269,6 +295,8 @@ export function WalkApp({ deps }: WalkAppProps) {
     try {
       await storeRef.current.setStatus('paused');
       setWalk({ ...walk, status: 'paused' });
+    } catch {
+      // Queue blocked on a save failure: pause refuses; banner already shows why.
     } finally {
       setPauseBusy(false);
     }
@@ -290,6 +318,21 @@ export function WalkApp({ deps }: WalkAppProps) {
     setRetrySaveBusy(true);
     try {
       await storeRef.current.retryPendingSaves();
+      // A retried mutation's original caller has already handled the
+      // rejection; reconcile visible state from committed data so recovered
+      // records actually appear (photos, cleared walks, metadata).
+      const hydration = await storeRef.current.hydrate();
+      if (hydration.status === 'ok') {
+        setWalk(hydration.walk);
+        setPhotos(hydration.photos);
+        setJobIdInput(hydration.walk.jobId);
+      } else {
+        setWalk(null);
+        setPhotos([]);
+        setFailedImports([]);
+      }
+    } catch {
+      // Banner already shows the failure; keep it.
     } finally {
       setRetrySaveBusy(false);
     }
@@ -413,16 +456,23 @@ export function WalkApp({ deps }: WalkAppProps) {
   }
 
   const walkStatus = walk?.status ?? 'active';
+  // A job ID typed before the walk exists lives only in state — never show
+  // 'Saved' for it.
+  const effectiveSaveState: SaveState =
+    saveState === 'saved' && !walk && jobIdInput.trim() !== '' ? 'unsaved' : saveState;
 
   return (
     <main className="mx-auto max-w-xl p-4">
       <h1 className="mb-1 text-xl font-bold">Pik-2-PDF</h1>
-      <p className="mb-4 text-sm text-neutral-700">Cabinet photos to US Letter PDF</p>
+      <p className="mb-1 text-sm text-neutral-700">Cabinet photos to US Letter PDF</p>
+      <p className="mb-4 text-xs text-neutral-700">
+        Saved means on this device only — export and keep PDFs in Files as your backup.
+      </p>
 
       {readOnly ? <ReadOnlyBanner /> : null}
 
       <SaveStatusBanner
-        saveState={saveState}
+        saveState={effectiveSaveState}
         error={saveError}
         onRetry={handleRetrySave}
         onRecoveryExport={() => runExport(true)}

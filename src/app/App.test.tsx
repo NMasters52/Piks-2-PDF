@@ -413,7 +413,7 @@ describe('export lifecycle regressions (review fixes)', () => {
 
     await user.upload(libraryInput(), [jpegFile('a.jpg')]);
     await waitFor(() => expect(screen.getByText(/Photo 1/i)).toBeInTheDocument());
-    expect(screen.queryByText(/Saved/i)).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('Saved');
 
     await user.click(screen.getByRole('button', { name: /^export pdf$/i }));
     await waitFor(() => expect(screen.getByText(/blob read failed/)).toBeInTheDocument());

@@ -8,6 +8,7 @@ import {
   resetDbTestHooks,
   resetWriterLockForTests,
   setDbTestHooks,
+  createMemoryLockManager,
 } from './db';
 import { makePhotoInput, makePhotoSequence } from './db.testhelpers';
 
@@ -238,23 +239,33 @@ describe('WalkStore', () => {
       expect(await empty.hydrate()).toEqual({ status: 'empty' });
 
       const { store } = await setupWalk();
-      await store.appendPhoto(makePhotoInput({ id: 'b', order: 1 }));
-      await store.appendPhoto(makePhotoInput({ id: 'a', order: 0 }));
+      // Caller order values are ignored: orders are assigned by commit order.
+      await store.appendPhoto(makePhotoInput({ id: 'b', order: 99 }));
+      await store.appendPhoto(makePhotoInput({ id: 'a', order: 99 }));
 
       const reopen = createWalkStore();
       const result = await reopen.hydrate();
       if (result.status !== 'ok') throw new Error('expected ok');
       expect(result.photos.map((p) => p.order)).toEqual([0, 1]);
-      expect(result.photos.map((p) => p.id)).toEqual(['a', 'b']);
+      expect(result.photos.map((p) => p.id)).toEqual(['b', 'a']);
     });
   });
 
   describe('acquireWriterLock', () => {
     it('grants exclusive writer lock to first instance and false to second', async () => {
-      const a = createWalkStore();
-      const b = createWalkStore();
+      const manager = createMemoryLockManager();
+      const a = createWalkStore({ lockManager: manager });
+      const b = createWalkStore({ lockManager: manager });
       expect(await a.acquireWriterLock()).toBe(true);
       expect(await b.acquireWriterLock()).toBe(false);
+      // Released lock is acquirable again (StrictMode remount path).
+      await a.releaseWriterLock();
+      expect(await b.acquireWriterLock()).toBe(true);
+    });
+
+    it('fails closed as read-only when no Web Locks mechanism exists', async () => {
+      const store = createWalkStore({ lockManager: null });
+      expect(await store.acquireWriterLock()).toBe(false);
     });
   });
 
@@ -356,5 +367,48 @@ describe('precondition misses do not block the queue (integration regression)', 
     await expect(store.updateNote('missing-id', 'x')).rejects.toBeTruthy();
     await store.appendPhoto(makePhotoInput({ id: 'A', order: 0 }));
     expect(await store.countPhotos()).toBe(1);
+  });
+});
+
+describe('failure latching and pause (review fixes)', () => {
+  beforeEach(async () => {
+    resetDbTestHooks();
+    resetWriterLockForTests();
+    await resetDatabase();
+  });
+
+  it('keeps save-failed latched while new mutations queue behind the block', async () => {
+    const store = createWalkStore({ lockManager: createMemoryLockManager() });
+    const states: SaveState[] = [];
+    store.subscribeSaveState((s) => states.push(s));
+    const { store: walkStore } = { store };
+    await store.createWalk('');
+
+    setDbTestHooks({
+      beforeAppendPhotoPut: ({ photoId }) => {
+        if (photoId === 'B') throw new DOMException('quota', 'QuotaExceededError');
+      },
+    });
+    const first = store.appendPhoto(makePhotoInput({ id: 'A' }));
+    await first;
+    const second = store.appendPhoto(makePhotoInput({ id: 'B' }));
+    await expect(second).rejects.toBeTruthy();
+    const statesAfterFailure = states.length;
+
+    // C queues behind the blocked job: failure state must NOT flip to 'unsaved'.
+    const third = store.appendPhoto(makePhotoInput({ id: 'C' }));
+    expect(states.slice(statesAfterFailure)).not.toContain('unsaved');
+    expect(states[states.length - 1]).toBe('save-failed');
+
+    // Pause must settle promptly (reject) instead of spinning forever.
+    await expect(store.setStatus('paused')).rejects.toBeTruthy();
+
+    // Clear the fault, retry: blocked job and queued C both commit.
+    resetDbTestHooks();
+    await store.retryPendingSaves();
+    await third;
+    expect(await store.countPhotos()).toBe(3);
+    expect(states[states.length - 1]).toBe('saved');
+    void walkStore;
   });
 });

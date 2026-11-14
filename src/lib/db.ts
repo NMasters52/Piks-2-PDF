@@ -51,8 +51,11 @@ export class StorageError extends Error {
 
 export interface WalkStore {
   /** Exclusive writer lock via Web Locks API. false → another tab owns
-   *  writes and this instance must not mutate; UI must go read-only. */
+   *  writes OR cross-tab exclusion is unavailable (fail closed); the UI must
+   *  go read-only. */
   acquireWriterLock(): Promise<boolean>;
+  /** Release the writer lock (component unmount / StrictMode remounts). */
+  releaseWriterLock(): Promise<void>;
   /** Load the current walk + photos (photos sorted by `order`). Resolves
    *  {status:'empty'} when no walk exists yet. Throws StorageError. */
   hydrate(): Promise<HydrationResult>;
@@ -61,8 +64,11 @@ export interface WalkStore {
   /** Number of committed photos (for capacity gating). */
   countPhotos(): Promise<number>;
   /** Transactionally persist one normalized photo + walk metadata.
-   *  Throws StorageError('quota') at MAX_PHOTOS committed. Resolves the
-   *  persisted record after the transaction commits (save acknowledgment). */
+   *  Throws StorageError('quota') at MAX_PHOTOS committed. The photo's
+   *  `order` is assigned INSIDE the transaction as the committed count, so
+   *  removals/retries can never create gaps — the caller's value is ignored.
+   *  Resolves the persisted record after the transaction commits (save
+   *  acknowledgment). */
   appendPhoto(photo: Omit<WalkPhoto, 'walkId'>): Promise<WalkPhoto>;
   /** Transactional removal + renumbering. Resolves remaining photos sorted by order. */
   removePhoto(photoId: string): Promise<WalkPhoto[]>;
@@ -70,7 +76,9 @@ export interface WalkStore {
   updateNote(photoId: string, note: string): Promise<void>;
   /** Queue a job/lot ID update ('' allowed). */
   updateJobId(jobId: string): Promise<void>;
-  /** Persist pause/resume. 'paused' waits for pending saves before resolving. */
+  /** Persist pause/resume. 'paused' waits for pending saves before resolving;
+   *  it rejects promptly (with the storage error) if the queue is blocked on
+   *  a save failure — the user must retry the save first. */
   setStatus(status: WalkStatus): Promise<void>;
   /** Transactional full clear of walk + photos. Caller confirms first. */
   clearWalk(): Promise<void>;
@@ -120,16 +128,6 @@ export function resetDbTestHooks(): void {
   dbTestHooks = {};
 }
 
-/**
- * When `navigator.locks` is unavailable (e.g. jsdom), a process-wide in-memory
- * holder approximates an exclusive writer lock so dual-tab behavior is testable.
- * Real browsers use the Web Locks API.
- */
-/** In-memory exclusive writer when `navigator.locks` is missing (jsdom). */
-const memoryLock = {
-  taken: false,
-};
-
 type LockManagerLike = {
   request<T>(
     name: string,
@@ -138,6 +136,10 @@ type LockManagerLike = {
   ): Promise<T>;
 };
 
+/** Cross-tab exclusion requires the Web Locks API. When it is missing we FAIL
+ *  CLOSED (read-only): a module-local memory lock cannot arbitrate between
+ *  tabs and would let two writable tabs corrupt each other. Tests inject a
+ *  lock manager explicitly via createWalkStore({ lockManager }). */
 function getLockManager(): LockManagerLike | null {
   if (typeof navigator !== 'undefined' && navigator.locks) {
     return navigator.locks as unknown as LockManagerLike;
@@ -145,9 +147,33 @@ function getLockManager(): LockManagerLike | null {
   return null;
 }
 
-/** Release in-memory writer lock between tests (jsdom fallback only). */
+/** @deprecated No-op: lock behavior is injected via createWalkStore options. */
 export function resetWriterLockForTests(): void {
-  memoryLock.taken = false;
+  /* lock manager is now injected; kept so existing test suites keep working */
+}
+
+/** Test helper: an in-memory exclusive lock manager (jsdom tests only). */
+export function createMemoryLockManager(): LockManagerLike & { _held: boolean } {
+  const state = { held: false };
+  return {
+    _held: false,
+    request<T>(
+      _name: string,
+      options: { mode: 'exclusive'; ifAvailable?: boolean },
+      callback: (lock: unknown) => Promise<T> | T,
+    ) {
+      void _name;
+      if (options.ifAvailable && state.held) return Promise.resolve(callback(null));
+      state.held = true;
+      return Promise.resolve(
+        callback({
+          release: () => {
+            state.held = false;
+          },
+        }) as T,
+      );
+    },
+  } as LockManagerLike & { _held: boolean };
 }
 
 let sharedDbPromise: Promise<IDBPDatabase<Pik2PdfDbSchema>> | null = null;
@@ -214,7 +240,12 @@ class WalkStoreImpl implements WalkStore {
   private pending: QueueJob<unknown>[] = [];
   private running = false;
   private blockedJob: QueueJob<unknown> | null = null;
-  private lockHold: Promise<void> | null = null;
+  private readonly lockManager: LockManagerLike | null;
+  private heldLock: { release(): void } | null = null;
+
+  constructor(lockManager: LockManagerLike | null) {
+    this.lockManager = lockManager;
+  }
 
   private emit(state: SaveState, error?: StorageError) {
     this.saveState = state;
@@ -232,7 +263,11 @@ class WalkStoreImpl implements WalkStore {
     return new Promise<T>((resolve, reject) => {
       const job: QueueJob<T> = { label, run, resolve, reject };
       this.pending.push(job as QueueJob<unknown>);
-      this.emit('unsaved');
+      // While a failure blocks the queue, the failure stays latched: emitting
+      // 'unsaved' here would hide the banner, unblock additions, and stall.
+      if (!this.blockedJob) {
+        this.emit('unsaved');
+      }
       void this.pump();
     });
   }
@@ -271,12 +306,10 @@ class WalkStoreImpl implements WalkStore {
   }
 
   async acquireWriterLock(): Promise<boolean> {
-    const locks = getLockManager();
-    if (!locks) {
-      if (memoryLock.taken) return false;
-      memoryLock.taken = true;
-      return true;
-    }
+    // Fail closed: without a cross-tab exclusion mechanism this instance must
+    // not write (UI goes read-only).
+    const locks = this.lockManager;
+    if (!locks) return false;
     return new Promise<boolean>((resolve) => {
       void locks
         .request(WRITER_LOCK, { mode: 'exclusive', ifAvailable: true }, (lock) => {
@@ -284,14 +317,25 @@ class WalkStoreImpl implements WalkStore {
             resolve(false);
             return undefined;
           }
-          this.lockHold = new Promise<void>(() => {
-            // Held until tab/instance teardown.
-          });
+          this.heldLock = lock as { release(): void };
           resolve(true);
-          return this.lockHold;
+          return new Promise<void>(() => {
+            // Held until releaseWriterLock() or tab teardown.
+          });
         })
         .catch(() => resolve(false));
     });
+  }
+
+  async releaseWriterLock(): Promise<void> {
+    if (this.heldLock) {
+      try {
+        this.heldLock.release();
+      } catch {
+        // Already released with the context.
+      }
+      this.heldLock = null;
+    }
   }
 
   async hydrate(): Promise<HydrationResult> {
@@ -352,7 +396,7 @@ class WalkStoreImpl implements WalkStore {
         await tx.done;
         throw new StorageError('quota', `Cannot exceed ${MAX_PHOTOS} photos`);
       }
-      const record: WalkPhoto = { ...photo, walkId: walk.id };
+      const record: WalkPhoto = { ...photo, walkId: walk.id, order: committedCount };
       dbTestHooks.beforeAppendPhotoPut?.({ photoId: record.id, committedCount });
       await photoStore.put(record);
       const updatedWalk: Walk = { ...walk, updatedAt: Date.now() };
@@ -425,9 +469,18 @@ class WalkStoreImpl implements WalkStore {
   setStatus(status: WalkStatus): Promise<void> {
     const waitForIdle =
       status === 'paused'
-        ? new Promise<void>((resolve) => {
+        ? new Promise<void>((resolve, reject) => {
             const check = () => {
-              if (this.blockedJob || this.pending.length > 0 || this.running) {
+              // A blocked queue means pending saves failed: settle pause
+              // promptly instead of spinning busy until a manual retry.
+              if (this.blockedJob) {
+                reject(
+                  this.lastError ??
+                    new StorageError('unknown', 'Save failed before pause'),
+                );
+                return;
+              }
+              if (this.pending.length > 0 || this.running) {
                 setTimeout(check, 0);
                 return;
               }
@@ -532,6 +585,16 @@ class WalkStoreImpl implements WalkStore {
   }
 }
 
-export function createWalkStore(): WalkStore {
-  return new WalkStoreImpl();
+export type WalkStoreOptions = {
+  /** Lock manager override (tests). Default: navigator.locks when present,
+   *  otherwise null → the store fails closed as read-only. */
+  lockManager?: LockManagerLike | null;
+};
+
+/** Build the app store. Without Web Locks support the store is read-only
+ *  (fail closed) rather than trusting a non-cross-tab fallback. */
+export function createWalkStore(options: WalkStoreOptions = {}): WalkStore {
+  const lockManager =
+    options.lockManager !== undefined ? options.lockManager : getLockManager();
+  return new WalkStoreImpl(lockManager);
 }
