@@ -78,11 +78,24 @@ Side task: Vercel CLI setup delegate `...delegate-task%3A1177c890-d54c-433f-8b79
 
 ## Review wave (cursor/grok-4.7, worktree isolation, against integrated commit `974f4aa`)
 
+**Delegate launch blocker (14:0x):** All three in-flight tasks failed at the provider —
+Vercel setup (composer-2.5, ran ~45 min then died), persistence review + PDF/image review (grok-4.7,
+failed at launch) — plus a grok-4.7 no-options canary: all with the same error:
+
+> Model unavailable on Plus. Plus includes Composer 2.5, Grok 4.7, Grok 4.6, and Grok 4.5 with
+> fixed settings. Switch to an included model to continue.
+
+`orchestrator_capabilities` is UNCHANGED (cursor: canRunChildTask true, same models/options, no
+constraints) — so this is account/plan-side enforcement on the Cursor Plus plan, not a catalog or
+options problem. Options were also cleared to defaults and the failure persists. Composer-2.5
+no-options canary launched to isolate whether ANY cursor child still works.
+
 | Review | Task ID | Status |
 | --- | --- | --- |
-| Persistence | `...delegate-task%3A120ece19-29ac-47fd-a357-12794853eede` | running |
-| PDF + images | `...delegate-task%3A3ce31356-cbc1-4322-9204-c597577e7230` | running |
-| Offline/acceptance | (queued behind the 3-delegate cap; launches when Vercel setup completes) | pending |
+| Persistence | `...delegate-task%3A120ece19-29ac-47fd-a357-12794853eede` | **FAILED** (provider) |
+| PDF + images | `...delegate-task%3A3ce31356-cbc1-4322-9204-c597577e7230` | **FAILED** (provider) |
+| Offline/acceptance | not launched (cap) | pending |
+| Vercel setup (side) | `...delegate-task%3A1177c890-d54c-433f-8b79-c7a3334f154c` | **FAILED** (provider, mid-run) |
 
 ## Integration / review / deployment
 
