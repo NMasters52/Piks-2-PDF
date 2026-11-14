@@ -1,0 +1,9 @@
+@import "tailwindcss";
+
+/* Black-and-white, basic-lines UI. UI agent owns the full styling. */
+body {
+  background: #ffffff;
+  color: #000000;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
