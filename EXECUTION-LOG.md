@@ -76,6 +76,14 @@ Verified evidence (real Chromium, production bundle):
 Side task: Vercel CLI setup delegate `...delegate-task%3A1177c890-d54c-433f-8b79-c7a3334f154c`
 (cursor/composer-2.5) — running; deployment blocked on its auth result + user `vercel login` confirmation.
 
+## Review wave (cursor/grok-4.7, worktree isolation, against integrated commit `974f4aa`)
+
+| Review | Task ID | Status |
+| --- | --- | --- |
+| Persistence | `...delegate-task%3A120ece19-29ac-47fd-a357-12794853eede` | running |
+| PDF + images | `...delegate-task%3A3ce31356-cbc1-4322-9204-c597577e7230` | running |
+| Offline/acceptance | (queued behind the 3-delegate cap; launches when Vercel setup completes) | pending |
+
 ## Integration / review / deployment
 
 (pending)
