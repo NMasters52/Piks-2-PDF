@@ -25,8 +25,6 @@ export type ExportSnapshot = {
 
 export type ExportProgress = (info: { photosDone: number; totalPhotos: number }) => void;
 
-const WORKER_URL = new URL('../workers/pdf.worker.ts', import.meta.url);
-
 let fontBytesCache: ArrayBuffer | null = null;
 let fontBytesPromise: Promise<ArrayBuffer> | null = null;
 
@@ -82,7 +80,10 @@ export async function renderWalkPdf(
       fontBytes,
     };
 
-    const worker = new Worker(WORKER_URL, {
+    // NOTE: keep the `new URL(..., import.meta.url)` INLINE — Vite's worker
+    // plugin only detects the literal `new Worker(new URL(...))` pattern and
+    // fails to emit the worker chunk otherwise (found in browser testing).
+    const worker = new Worker(new URL('../workers/pdf.worker.ts', import.meta.url), {
       type: 'module',
     });
 
@@ -133,6 +134,15 @@ export async function renderWalkPdf(
 // assets; fetching each once at boot populates the HTTP cache so the first
 // export needs no network. Failures are non-fatal — a later export retries.
 void loadFontBytes().catch(() => undefined);
-void fetch(WORKER_URL.href).catch(() => undefined);
+try {
+  // Boot-time worker warm-up: fetch + parse the worker chunk while online
+  // (terminated immediately; real exports spawn their own worker).
+  const warm = new Worker(new URL('../workers/pdf.worker.ts', import.meta.url), {
+    type: 'module',
+  });
+  setTimeout(() => warm.terminate(), 3000);
+} catch {
+  // Worker unavailable (test environments) — exports degrade to their own error path.
+}
 
 export { buildPdfFilename };
