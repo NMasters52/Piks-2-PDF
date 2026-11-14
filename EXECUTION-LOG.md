@@ -40,9 +40,22 @@ Running (3 × cursor/composer-2.5, worktree isolation, from foundation commit `5
 
 | Task | Task ID | Owned files |
 | --- | --- | --- |
-| Storage | `...delegate-task%3A74318402-2ab4-47c2-b502-da28caacbc46` | `src/lib/db.ts` + focused tests |
-| Images + PDF | `...delegate-task%3A8536b145-bda0-4ca1-b08f-d1b619e5083a` | `src/lib/images.ts`, `src/lib/pdf/layout.ts`, `src/lib/pdf.ts`, `src/workers/pdf.worker.ts` + tests (pdfjs-verified) |
-| UI | `...delegate-task%3Aeb2bec3d-1960-47cb-98ce-cc70a25e6c1d` | `src/app/`, `src/components/`, `src/index.css` + interaction tests |
+| Storage | `...delegate-task%3A74318402-2ab4-47c2-b502-da28caacbc46` | `src/lib/db.ts` + focused tests — **running** |
+| Images + PDF | `...delegate-task%3A8536b145-bda0-4ca1-b08f-d1b619e5083a` | `src/lib/images.ts`, `src/lib/pdf/layout.ts`, `src/lib/pdf.ts`, `src/workers/pdf.worker.ts` — **running** |
+| UI | `...delegate-task%3Aeb2bec3d-1960-47cb-98ce-cc70a25e6c1d` | `src/app/`, `src/components/`, `src/index.css` — **DONE** |
+
+### Integrated: UI (delegate branch `t3/ipad-cabinet-pdf-flow` @ `51c909c`)
+
+- Merged into `main` (merge commit on top of `d913848`); only owned files touched.
+- Verified in coordinator checkout: typecheck clean, 32/32 tests pass, production build green (236.97 kB JS).
+- Full flow implemented: job ID, camera/library inputs, ordered serialized imports with per-file retry,
+  capacity gate (50, full-selection reject with spaces remaining, in-flight reservation), notes+counter,
+  pause/resume, save states with failure banner + retry + recovery export, read-only second tab,
+  export single-flight/progress/share/download, clear confirmation.
+- Integration watch-point: UI swallows `PdfExportError` code `'worker'` (stub-era workaround) — must
+  reconcile with real `pdf.ts` error codes at integration (coordinator fix if needed).
+- Runtime end-to-end flow still blocked on storage + images/PDF implementations (real App defaults call
+  stubs that throw until those land).
 
 ## Integration / review / deployment
 
