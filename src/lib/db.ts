@@ -165,13 +165,10 @@ export function createMemoryLockManager(): LockManagerLike & { _held: boolean } 
       void _name;
       if (options.ifAvailable && state.held) return Promise.resolve(callback(null));
       state.held = true;
-      return Promise.resolve(
-        callback({
-          release: () => {
-            state.held = false;
-          },
-        }) as T,
-      );
+      // Web Locks releases when the callback settles; Lock has no release().
+      return Promise.resolve()
+        .then(() => callback({ name: _name, mode: options.mode }))
+        .finally(() => { state.held = false; });
     },
   } as LockManagerLike & { _held: boolean };
 }
@@ -241,7 +238,9 @@ class WalkStoreImpl implements WalkStore {
   private running = false;
   private blockedJob: QueueJob<unknown> | null = null;
   private readonly lockManager: LockManagerLike | null;
-  private heldLock: { release(): void } | null = null;
+  private releaseRequested = false;
+  private releaseLock: (() => void) | null = null;
+  private lockRequest: Promise<unknown> | null = null;
 
   constructor(lockManager: LockManagerLike | null) {
     this.lockManager = lockManager;
@@ -308,34 +307,35 @@ class WalkStoreImpl implements WalkStore {
   async acquireWriterLock(): Promise<boolean> {
     // Fail closed: without a cross-tab exclusion mechanism this instance must
     // not write (UI goes read-only).
+    this.releaseRequested = false;
     const locks = this.lockManager;
     if (!locks) return false;
     return new Promise<boolean>((resolve) => {
-      void locks
+      this.lockRequest = locks
         .request(WRITER_LOCK, { mode: 'exclusive', ifAvailable: true }, (lock) => {
-          if (!lock) {
+          if (!lock || this.releaseRequested) {
             resolve(false);
             return undefined;
           }
-          this.heldLock = lock as { release(): void };
-          resolve(true);
-          return new Promise<void>(() => {
-            // Held until releaseWriterLock() or tab teardown.
+          const hold = new Promise<void>((release) => {
+            this.releaseLock = release;
           });
+          resolve(true);
+          return hold;
         })
         .catch(() => resolve(false));
     });
   }
 
   async releaseWriterLock(): Promise<void> {
-    if (this.heldLock) {
-      try {
-        this.heldLock.release();
-      } catch {
-        // Already released with the context.
-      }
-      this.heldLock = null;
-    }
+    // Completing the request callback releases a Web Lock. Wait for the
+    // request to settle before a replacement store attempts acquisition.
+    this.releaseRequested = true;
+    const request = this.lockRequest;
+    this.releaseLock?.();
+    this.releaseLock = null;
+    await request;
+    if (this.lockRequest === request) this.lockRequest = null;
   }
 
   async hydrate(): Promise<HydrationResult> {

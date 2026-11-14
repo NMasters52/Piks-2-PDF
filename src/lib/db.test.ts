@@ -263,6 +263,17 @@ describe('WalkStore', () => {
       expect(await b.acquireWriterLock()).toBe(true);
     });
 
+    it('releases an acquisition cancelled before its callback runs', async () => {
+      const manager = createMemoryLockManager();
+      const first = createWalkStore({ lockManager: manager });
+      const acquisition = first.acquireWriterLock();
+      await first.releaseWriterLock();
+      expect(await acquisition).toBe(false);
+      const replacement = createWalkStore({ lockManager: manager });
+      expect(await replacement.acquireWriterLock()).toBe(true);
+      await replacement.releaseWriterLock();
+    });
+
     it('fails closed as read-only when no Web Locks mechanism exists', async () => {
       const store = createWalkStore({ lockManager: null });
       expect(await store.acquireWriterLock()).toBe(false);

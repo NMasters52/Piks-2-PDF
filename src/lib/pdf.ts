@@ -5,6 +5,7 @@ import type { PdfPhotoInput, PdfRenderRequest, PdfWorkerOutgoing } from '../type
 import { buildPdfFilename } from './pdf/layout';
 
 import fontUrl from '../assets/fonts/DejaVuSans.ttf?url';
+import PdfWorker from '../workers/pdf.worker.ts?worker&inline';
 
 export class PdfExportError extends Error {
   constructor(
@@ -85,12 +86,8 @@ export async function renderWalkPdf(
       fontBytes,
     };
 
-    // NOTE: keep the `new URL(..., import.meta.url)` INLINE — Vite's worker
-    // plugin only detects the literal `new Worker(new URL(...))` pattern and
-    // fails to emit the worker chunk otherwise (found in browser testing).
-    const worker = new Worker(new URL('../workers/pdf.worker.ts', import.meta.url), {
-      type: 'module',
-    });
+    // Inline worker code stays in the loaded app, independent of HTTP cache.
+    const worker = new PdfWorker();
 
     try {
       return await new Promise<{ bytes: Uint8Array; filename: string; warnings?: string[] }>((resolve, reject) => {
@@ -133,21 +130,8 @@ export async function renderWalkPdf(
   }
 }
 
-// Offline-while-open contract (playbook): export code, worker, and fonts must
-// be ready while the app is online, because the first export may happen after
-// connectivity is gone. The worker bundle and font are immutable hashed
-// assets; fetching each once at boot populates the HTTP cache so the first
-// export needs no network. Failures are non-fatal — a later export retries.
+// Load the font while online. Worker code is bundled inline, so spawning an
+// export after connectivity disappears never fetches a worker script.
 void loadFontBytes().catch(() => undefined);
-try {
-  // Boot-time worker warm-up: fetch + parse the worker chunk while online
-  // (terminated immediately; real exports spawn their own worker).
-  const warm = new Worker(new URL('../workers/pdf.worker.ts', import.meta.url), {
-    type: 'module',
-  });
-  setTimeout(() => warm.terminate(), 3000);
-} catch {
-  // Worker unavailable (test environments) — exports degrade to their own error path.
-}
 
 export { buildPdfFilename };

@@ -423,3 +423,32 @@ describe('export lifecycle regressions (review fixes)', () => {
     await waitFor(() => expect(screen.getByText(/PDF ready/i)).toBeInTheDocument());
   });
 });
+
+it('removes a recovered append from failed imports after retrying save', async () => {
+  vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:recovered');
+  vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+  const db = await import('../lib/db');
+  await db.resetDbConnectionForTests();
+  await new Promise<void>((resolve, reject) => {
+    const req = indexedDB.deleteDatabase('pik-2-pdf');
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error);
+  });
+  const store = db.createWalkStore({ lockManager: db.createMemoryLockManager() });
+  const { user } = renderApp(buildTestDeps(store));
+  try {
+    await waitForReady();
+    db.setDbTestHooks({ beforeAppendPhotoPut: () => { throw new DOMException('quota', 'QuotaExceededError'); } });
+    await user.upload(libraryInput(), jpegFile('recover.jpg'));
+    await screen.findByText(/recover\.jpg/);
+    db.resetDbTestHooks();
+    await user.click(screen.getByRole('button', { name: /retry save/i }));
+    await screen.findByText('1 of 50 photos');
+    expect(screen.queryByRole('button', { name: /^retry$/i })).not.toBeInTheDocument();
+    expect(await store.countPhotos()).toBe(1);
+  } finally {
+    cleanup();
+    db.resetDbTestHooks();
+    await db.resetDbConnectionForTests();
+  }
+});

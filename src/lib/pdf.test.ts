@@ -2,6 +2,10 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { renderWalkPdf, type ExportSnapshot } from './pdf';
 import type { PdfWorkerOutgoing } from '../types/walk';
 
+vi.mock('../workers/pdf.worker.ts?worker&inline', () => ({
+  default: function InlineWorker() { return new Worker('inline-test-worker'); },
+}));
+
 let latestWorker: TestWorker | null = null;
 
 class TestWorker {

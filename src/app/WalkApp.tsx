@@ -39,6 +39,7 @@ type WalkAppProps = {
 
 export function WalkApp({ deps }: WalkAppProps) {
   const storeRef = useRef<WalkStore | null>(null);
+  const storeCleanupRef = useRef<Promise<void>>(Promise.resolve());
   const cameraRef = useRef<HTMLInputElement>(null);
   const libraryRef = useRef<HTMLInputElement>(null);
   const exportInFlightRef = useRef(false);
@@ -53,6 +54,7 @@ export function WalkApp({ deps }: WalkAppProps) {
   const [saveError, setSaveError] = useState<import('../lib/db').StorageError | undefined>();
   const [inFlightCount, setInFlightCount] = useState(0);
   const [capacityMessage, setCapacityMessage] = useState<string | null>(null);
+  const importPhotoIdsRef = useRef(new Map<string, string>());
   const [failedImports, setFailedImports] = useState<FailedImport[]>([]);
   const [retryingImportKey, setRetryingImportKey] = useState<string | null>(null);
   const [removingId, setRemovingId] = useState<string | null>(null);
@@ -79,7 +81,10 @@ export function WalkApp({ deps }: WalkAppProps) {
 
     let cancelled = false;
 
-    void (async () => {
+    const previousCleanup = storeCleanupRef.current;
+    const initialization = (async () => {
+      await previousCleanup;
+      if (cancelled) return;
       const writable = await nextStore.acquireWriterLock();
       if (cancelled) {
         // StrictMode remount: give the lock back so the live store can take it.
@@ -106,7 +111,7 @@ export function WalkApp({ deps }: WalkAppProps) {
     return () => {
       cancelled = true;
       unsub?.();
-      void nextStore.releaseWriterLock();
+      storeCleanupRef.current = initialization.then(() => nextStore.releaseWriterLock());
       if (exportObjectUrlRef.current) URL.revokeObjectURL(exportObjectUrlRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mount once per store instance
@@ -168,6 +173,7 @@ export function WalkApp({ deps }: WalkAppProps) {
       const s = storeRef.current!;
       const normalized = await deps.normalizeImageFile(file);
       const id = globalThis.crypto?.randomUUID?.() ?? `photo-${Date.now()}-${nextOrder}`;
+      importPhotoIdsRef.current.set(fileKey(file), id);
       const saved = await s.appendPhoto({
         id,
         blob: normalized.blob,
@@ -178,6 +184,7 @@ export function WalkApp({ deps }: WalkAppProps) {
         createdAt: Date.now(),
         order: nextOrder,
       });
+      importPhotoIdsRef.current.delete(fileKey(file));
       setPhotos((prev) => [...prev, saved].sort((a, b) => a.order - b.order));
       setWalk((w) => (w ? { ...w, updatedAt: Date.now() } : w));
     },
@@ -326,6 +333,17 @@ export function WalkApp({ deps }: WalkAppProps) {
         setWalk(hydration.walk);
         setPhotos(hydration.photos);
         setJobIdInput(hydration.walk.jobId);
+        // Match storage retries to their original file, preserving unrelated
+        // decode failures without offering to import recovered photos twice.
+        const committedIds = new Set(hydration.photos.map((photo) => photo.id));
+        const recoveredKeys = new Set<string>();
+        for (const [key, id] of importPhotoIdsRef.current) {
+          if (committedIds.has(id)) {
+            recoveredKeys.add(key);
+            importPhotoIdsRef.current.delete(key);
+          }
+        }
+        setFailedImports((current) => current.filter((item) => !recoveredKeys.has(item.key)));
       } else {
         setWalk(null);
         setPhotos([]);
