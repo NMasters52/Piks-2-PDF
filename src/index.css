@@ -24,3 +24,14 @@ body {
   white-space: nowrap;
   border-width: 0;
 }
+
+.walk-toolbar > button {
+  min-height: 44px;
+  padding: 0.375rem;
+  border: 1px solid currentColor;
+  border-radius: 0.25rem;
+}
+
+.walk-toolbar > button:disabled {
+  opacity: 0.5;
+}
