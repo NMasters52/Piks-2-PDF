@@ -423,7 +423,7 @@ export function WalkApp({ deps }: WalkAppProps) {
     });
     try {
       if (navigator.canShare?.({ files: [file] })) {
-        await navigator.share({ files: [file], title: exportFilename });
+        await navigator.share({ files: [file] });
       } else {
         throw new Error('share unavailable');
       }
