@@ -23,7 +23,7 @@ async function waitForReady() {
 }
 
 function libraryInput() {
-  return screen.getByLabelText(/add from library/i);
+  return screen.getByLabelText(/add photos/i);
 }
 
 describe('capacity and selection rejection', () => {
@@ -228,13 +228,13 @@ describe('clear walk confirmation', () => {
     });
     const { user } = renderApp(buildTestDeps(store));
     await waitForReady();
-    await user.click(screen.getByRole('button', { name: /clear walk/i }));
+    await user.click(screen.getByRole('button', { name: /^new walk$/i }));
     const dialog = await screen.findByRole('dialog');
-    await user.click(within(dialog).getByRole('button', { name: /cancel/i }));
+    await user.click(within(dialog).getByRole('button', { name: /keep editing/i }));
     expect(screen.getByText(/Photo 1/i)).toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', { name: /clear walk/i }));
-    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: /^clear walk$/i }));
+    await user.click(screen.getByRole('button', { name: /^new walk$/i }));
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: /^clear and start new$/i }));
     await waitFor(() => expect(screen.getByText(/no photos yet/i)).toBeInTheDocument());
     expect(store.getPhotos()).toHaveLength(0);
   });
@@ -382,7 +382,7 @@ describe('export lifecycle regressions (review fixes)', () => {
     await user.click(screen.getByRole('button', { name: /^export pdf$/i }));
     const removeButtons = await screen.findAllByRole('button', { name: /^remove photo$/i });
     expect(removeButtons[0]).toBeDisabled();
-    expect(screen.getByRole('button', { name: /clear walk/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /^new walk$/i })).toBeDisabled();
 
     await waitFor(() => expect(screen.getByText(/PDF ready/i)).toBeInTheDocument());
     expect(removeButtons[0]).toBeEnabled();

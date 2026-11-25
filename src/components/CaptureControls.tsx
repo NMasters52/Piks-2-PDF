@@ -1,4 +1,4 @@
-import { useId, type RefObject } from 'react';
+import { useEffect, useId, useState, type RefObject } from 'react';
 
 type CaptureControlsProps = {
   cameraInputRef: RefObject<HTMLInputElement | null>;
@@ -20,13 +20,19 @@ export function CaptureControls({
   const cameraId = useId();
   const libraryId = useId();
 
+  const [atTop, setAtTop] = useState(true);
+  useEffect(() => {
+    const update = () => setAtTop(window.scrollY <= 0);
+    update();
+    window.addEventListener('scroll', update, { passive: true });
+    return () => window.removeEventListener('scroll', update);
+  }, []);
   return (
-    <div className="mb-4">
-      <p className="mb-2 text-sm font-medium">Add photos</p>
-      <div className="flex flex-col gap-2 sm:flex-row">
+    <div className="fixed inset-x-0 bottom-0 z-10 mx-auto max-w-xl border-t bg-white p-2 pb-[max(.5rem,env(safe-area-inset-bottom))]">
+      <div className="grid grid-cols-3 gap-1">
         <label
           htmlFor={cameraId}
-          className={`inline-flex cursor-pointer items-center justify-center border border-black px-4 py-3 text-sm font-medium focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-black ${
+          className={`inline-flex cursor-pointer items-center justify-center border border-black px-1 py-3 text-sm font-medium focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-black ${
             disabled ? 'cursor-not-allowed opacity-50' : ''
           }`}
         >
@@ -47,11 +53,11 @@ export function CaptureControls({
         </label>
         <label
           htmlFor={libraryId}
-          className={`inline-flex cursor-pointer items-center justify-center border border-black px-4 py-3 text-sm font-medium focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-black ${
+          className={`inline-flex cursor-pointer items-center justify-center border border-black px-1 py-3 text-sm font-medium focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-black ${
             disabled ? 'cursor-not-allowed opacity-50' : ''
           }`}
         >
-          Add from library
+          Add photos
           <input
             ref={libraryInputRef}
             id={libraryId}
@@ -66,6 +72,7 @@ export function CaptureControls({
             }}
           />
         </label>
+        <button type="button" disabled={atTop} onClick={() => window.scrollTo(0, 0)} className="border px-1 text-sm disabled:opacity-50">Back to top ↑</button>
       </div>
       {disabled && disabledReason ? (
         <p className="mt-2 text-sm text-neutral-700">{disabledReason}</p>

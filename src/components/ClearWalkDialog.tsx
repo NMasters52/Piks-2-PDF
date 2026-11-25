@@ -17,7 +17,7 @@ export function ClearWalkDialog({ open, onConfirm, onCancel, clearing }: ClearWa
     >
       <div className="w-full max-w-sm border border-black bg-white p-4 shadow-none">
         <h2 id="clear-walk-title" className="text-lg font-bold">
-          Clear this walk?
+          Start a new walk?
         </h2>
         <p className="mt-2 text-sm">
           This removes all photos, notes, and the job ID from this device. Export a PDF first if
@@ -30,7 +30,7 @@ export function ClearWalkDialog({ open, onConfirm, onCancel, clearing }: ClearWa
             disabled={clearing}
             className="border border-black px-3 py-2 text-sm font-medium focus:outline focus:outline-2 focus:outline-offset-2 focus:outline-black disabled:opacity-50"
           >
-            {clearing ? 'Clearing…' : 'Clear walk'}
+            {clearing ? 'Clearing…' : 'Clear and start new'}
           </button>
           <button
             type="button"
@@ -39,7 +39,7 @@ export function ClearWalkDialog({ open, onConfirm, onCancel, clearing }: ClearWa
             autoFocus
             className="border border-black px-3 py-2 text-sm focus:outline focus:outline-2 focus:outline-offset-2 focus:outline-black"
           >
-            Cancel
+            Keep editing
           </button>
         </div>
       </div>

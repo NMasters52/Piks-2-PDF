@@ -467,7 +467,7 @@ export function WalkApp({ deps }: WalkAppProps) {
 
   if (hydrating) {
     return (
-      <main className="mx-auto max-w-xl p-4">
+      <main className="mx-auto max-w-xl p-4 pb-32">
         <p className="text-sm">Loading walk…</p>
       </main>
     );
@@ -480,8 +480,36 @@ export function WalkApp({ deps }: WalkAppProps) {
     saveState === 'saved' && !walk && jobIdInput.trim() !== '' ? 'unsaved' : saveState;
 
   return (
-    <main className="mx-auto max-w-xl p-4">
+    <main className="mx-auto max-w-xl p-4 pb-32">
       <h1 className="mb-1 text-xl font-bold">Pik-2-PDF</h1>
+      <nav aria-label="Walk actions" className="sticky top-0 z-10 mb-3 flex items-start gap-1 border-b bg-white py-2 text-sm">
+      <ExportControls
+        photoCount={photos.length}
+        onExport={() => runExport(false)}
+        exporting={exporting}
+        exportProgress={exportProgress}
+        exportError={exportError}
+        exportReady={exportFilename ? { filename: exportFilename } : null}
+        exportWarnings={exportWarnings}
+        onShare={handleShare}
+        onDownload={handleDownload}
+        onDismissExport={resetExportArtifact}
+        onRetryExport={() => runExport(isRecoveryExport)}
+        disabled={readOnly || exportLocked}
+        exportLabel={isRecoveryExport ? 'Recovery export PDF' : 'Export PDF'}
+      />
+
+      <button
+        type="button"
+        disabled={readOnly || !walk || mutationsLocked || inFlightCount > 0}
+        onClick={() => setClearOpen(true)}
+        className="border border-black px-3 py-2 text-sm focus:outline focus:outline-2 focus:outline-offset-2 focus:outline-black disabled:opacity-50"
+      >
+        New walk
+      </button>
+
+        <button type="button" className="min-h-11 border px-2" onClick={() => window.scrollTo(0, document.documentElement.scrollHeight)}>Jump to bottom ↓</button>
+      </nav>
       <p className="mb-1 text-sm text-neutral-700">Cabinet photos to US Letter PDF</p>
       <p className="mb-4 text-xs text-neutral-700">
         Saved means on this device only — export and keep PDFs in Files as your backup.
@@ -539,31 +567,6 @@ export function WalkApp({ deps }: WalkAppProps) {
         disabled={readOnly || mutationsLocked}
         removingId={removingId}
       />
-
-      <ExportControls
-        photoCount={photos.length}
-        onExport={() => runExport(false)}
-        exporting={exporting}
-        exportProgress={exportProgress}
-        exportError={exportError}
-        exportReady={exportFilename ? { filename: exportFilename } : null}
-        exportWarnings={exportWarnings}
-        onShare={handleShare}
-        onDownload={handleDownload}
-        onDismissExport={resetExportArtifact}
-        onRetryExport={() => runExport(isRecoveryExport)}
-        disabled={readOnly || exportLocked}
-        exportLabel={isRecoveryExport ? 'Recovery export PDF' : 'Export PDF'}
-      />
-
-      <button
-        type="button"
-        disabled={readOnly || !walk || mutationsLocked || inFlightCount > 0}
-        onClick={() => setClearOpen(true)}
-        className="border border-black px-3 py-2 text-sm focus:outline focus:outline-2 focus:outline-offset-2 focus:outline-black disabled:opacity-50"
-      >
-        Clear walk
-      </button>
 
       <ClearWalkDialog
         open={clearOpen}

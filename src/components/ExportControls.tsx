@@ -31,12 +31,12 @@ export function ExportControls({
   const exportDisabled = disabled || photoCount === 0 || exporting;
 
   return (
-    <div className="mb-4 border-t border-black pt-4">
+    <div className="min-w-0 flex-1 max-h-[45dvh] overflow-auto">
       <button
         type="button"
         onClick={onExport}
         disabled={exportDisabled}
-        className="w-full border border-black px-4 py-3 text-sm font-medium focus:outline focus:outline-2 focus:outline-offset-2 focus:outline-black disabled:opacity-50"
+        className="w-full border border-black min-h-11 px-2 py-2 text-sm font-medium focus:outline focus:outline-2 focus:outline-offset-2 focus:outline-black disabled:opacity-50"
       >
         {exporting ? 'Generating PDF…' : exportLabel}
       </button>
