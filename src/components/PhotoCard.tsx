@@ -32,7 +32,7 @@ export function PhotoCard({
   }, [photo.note]);
 
   return (
-    <li className="border border-black p-3">
+    <li className="rounded-lg border border-neutral-300 p-3">
       <div className="flex gap-3">
         {thumbUrl ? (
           <img
@@ -59,7 +59,7 @@ export function PhotoCard({
               setNote(next);
               onNoteChange(photo.id, next);
             }}
-            className="mt-1 w-full border border-black px-2 py-1 text-sm focus:outline focus:outline-2 focus:outline-offset-1 focus:outline-black disabled:opacity-50"
+            className="mt-1 w-full border border-black px-2 py-1 text-base focus:outline focus:outline-2 focus:outline-offset-1 focus:outline-black disabled:opacity-50"
           />
           <p className="mt-1 text-right text-xs text-neutral-700" aria-live="polite">
             {note.length} / {MAX_NOTE_CHARS}

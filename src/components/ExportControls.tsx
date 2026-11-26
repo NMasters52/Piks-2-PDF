@@ -1,6 +1,4 @@
 type ExportControlsProps = {
-  photoCount: number;
-  onExport: () => void;
   exporting: boolean;
   exportProgress?: { photosDone: number; totalPhotos: number } | null;
   exportError?: string | null;
@@ -10,39 +8,22 @@ type ExportControlsProps = {
   onDownload: () => void;
   onDismissExport: () => void;
   onRetryExport: () => void;
-  disabled?: boolean;
-  exportLabel?: string;
 };
 
 export function ExportControls({
-  photoCount,
-  onExport,
   exporting,
   exportProgress,
   exportError,
   exportReady,
-  exportWarnings,  onShare,
+  exportWarnings,
+  onShare,
   onDownload,
   onDismissExport,
   onRetryExport,
-  disabled,
-  exportLabel = 'Export PDF',
 }: ExportControlsProps) {
-  const exportDisabled = disabled || photoCount === 0 || exporting;
 
   return (
-    <div className="mb-4 border-t border-black pt-4">
-      <button
-        type="button"
-        onClick={onExport}
-        disabled={exportDisabled}
-        className="w-full border border-black px-4 py-3 text-sm font-medium focus:outline focus:outline-2 focus:outline-offset-2 focus:outline-black disabled:opacity-50"
-      >
-        {exporting ? 'Generating PDF…' : exportLabel}
-      </button>
-      {photoCount === 0 ? (
-        <p className="mt-2 text-xs text-neutral-700">Add at least one photo to export.</p>
-      ) : null}
+    <div>
       {exporting && exportProgress ? (
         <p className="mt-2 text-sm" role="status" aria-live="polite">
           Preparing PDF: {exportProgress.photosDone} of {exportProgress.totalPhotos} photos
@@ -61,12 +42,12 @@ export function ExportControls({
         </div>
       ) : null}
       {exportReady ? (
-        <div className="mt-3 flex flex-col gap-2">
-          <p className="text-sm" role="status">
+        <div className="mb-4 grid grid-cols-2 gap-2 rounded-md border border-neutral-300 bg-neutral-50 p-3">
+          <p className="col-span-2 wrap-anywhere text-sm font-medium" role="status">
             PDF ready: {exportReady.filename}
           </p>
           {exportWarnings?.map((warning) => (
-            <p key={warning} className="text-xs" role="note">
+            <p key={warning} className="col-span-2 text-xs" role="note">
               {warning}
             </p>
           ))}
@@ -87,7 +68,7 @@ export function ExportControls({
           <button
             type="button"
             onClick={onDismissExport}
-            className="text-left text-sm underline focus:outline focus:outline-2 focus:outline-offset-2 focus:outline-black"
+            className="col-span-2 justify-self-end text-sm underline focus:outline focus:outline-2 focus:outline-offset-2 focus:outline-black"
           >
             Dismiss
           </button>

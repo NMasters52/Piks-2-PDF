@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { openDB } from 'idb';
 import { MAX_PHOTOS } from '../types/walk';
 import type { SaveState } from '../types/walk';
 import {
@@ -40,6 +41,117 @@ describe('WalkStore', () => {
   afterEach(() => {
     resetDbTestHooks();
     resetWriterLockForTests();
+  });
+
+  describe('parked drafts', () => {
+    it('upgrades a v1 active walk and preserves its photos and notes', async () => {
+      const previous = await openDB(DB_NAME, 1, {
+        upgrade(db) {
+          db.createObjectStore('walks', { keyPath: 'id' });
+          const photos = db.createObjectStore('photos', { keyPath: 'id' });
+          photos.createIndex('byWalkId', 'walkId');
+        },
+      });
+      const now = Date.now();
+      const walk = { id: 'v1-walk', jobId: 'Lot 14', createdAt: now, updatedAt: now, status: 'active' };
+      const photo = { ...makePhotoInput({ note: 'Check the left hinge' }), walkId: walk.id };
+      await previous.put('walks', walk);
+      await previous.put('photos', photo);
+      previous.close();
+
+      const store = createWalkStore();
+      await expect(store.hydrate()).resolves.toMatchObject({
+        status: 'ok',
+        walk,
+        photos: [{ id: photo.id, note: photo.note }],
+      });
+      await expect(store.listDrafts()).resolves.toEqual([]);
+      await store.switchWalk({ current: 'park' });
+      await expect(store.listDrafts()).resolves.toMatchObject([{ id: walk.id, photoCount: 1 }]);
+      await expect(openDB(DB_NAME, 1)).rejects.toMatchObject({ name: 'VersionError' });
+    });
+
+    it('preserves the job, photo and last queued note across reopening the database', async () => {
+      const { store, walk } = await setupWalk('Lot 14');
+      const photo = await store.appendPhoto(makePhotoInput());
+      const saveNote = store.updateNote(photo.id, 'Check the left hinge');
+      const park = store.switchWalk({ current: 'park' });
+      await saveNote;
+      await expect(park).resolves.toEqual({ status: 'empty' });
+      await resetDbConnectionForTests();
+
+      const reloaded = createWalkStore();
+      await expect(reloaded.hydrate()).resolves.toEqual({ status: 'empty' });
+      await expect(reloaded.listDrafts()).resolves.toEqual([
+        { id: walk.id, jobId: 'Lot 14', updatedAt: expect.any(Number), photoCount: 1 },
+      ]);
+      await expect(reloaded.switchWalk({ current: 'none', draftId: walk.id })).resolves.toMatchObject({
+        status: 'ok',
+        walk: { id: walk.id, jobId: 'Lot 14', status: 'active' },
+        photos: [{ id: photo.id, note: 'Check the left hinge' }],
+      });
+      await expect(reloaded.listDrafts()).resolves.toEqual([]);
+    });
+
+    it('requires a replacement at capacity and uses the freed slot when reopening', async () => {
+      const store = createWalkStore();
+      const parkedIds: string[] = [];
+      for (const jobId of ['Lot 1', 'Lot 2', 'Lot 3']) {
+        const walk = await store.createWalk(jobId);
+        parkedIds.push(walk.id);
+        await store.appendPhoto(makePhotoInput());
+        await store.switchWalk({ current: 'park' });
+      }
+      const active = await store.createWalk('Lot 4');
+      await store.appendPhoto(makePhotoInput());
+
+      await expect(store.switchWalk({ current: 'park' })).rejects.toThrow('Choose a parked draft');
+      await expect(store.hydrate()).resolves.toMatchObject({ walk: { id: active.id } });
+      await expect(store.listDrafts()).resolves.toHaveLength(3);
+
+      await store.switchWalk({ current: 'park', replaceDraftId: parkedIds[1] });
+      await expect(store.listDrafts()).resolves.toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: parkedIds[0], photoCount: 1 }),
+        expect.objectContaining({ id: parkedIds[2], photoCount: 1 }),
+        expect.objectContaining({ id: active.id, photoCount: 1 }),
+      ]));
+      await expect(store.switchWalk({ current: 'none', draftId: parkedIds[1] })).rejects.toThrow(
+        'no longer available',
+      );
+
+      const next = await store.createWalk('Lot 5');
+      await expect(
+        store.switchWalk({ current: 'park', draftId: parkedIds[0] }),
+      ).resolves.toMatchObject({ walk: { id: parkedIds[0] } });
+      await expect(store.listDrafts()).resolves.toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: next.id }),
+      ]));
+      await expect(store.listDrafts()).resolves.toHaveLength(3);
+    });
+
+    it('rejects a queued switch if an earlier save fails and requires explicit retry', async () => {
+      const { store, walk } = await setupWalk();
+      const photo = await store.appendPhoto(makePhotoInput());
+      setDbTestHooks({
+        beforeQueuedTransaction(op) {
+          if (op === 'updateNote') throw new StorageError('transaction', 'injected');
+        },
+      });
+      const update = store.updateNote(photo.id, 'new note');
+      const switching = store.switchWalk({ current: 'park' });
+      await Promise.all([
+        expect(update).rejects.toThrow('injected'),
+        expect(switching).rejects.toThrow('injected'),
+      ]);
+
+      resetDbTestHooks();
+      await store.retryPendingSaves();
+      await expect(store.listDrafts()).resolves.toEqual([]);
+      await expect(store.hydrate()).resolves.toMatchObject({
+        walk: { id: walk.id },
+        photos: [{ note: 'new note' }],
+      });
+    });
   });
 
   describe('save queue and save state', () => {
