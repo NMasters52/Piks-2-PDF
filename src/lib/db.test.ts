@@ -106,6 +106,36 @@ describe('WalkStore', () => {
       }]);
       await expect(reloaded.listDrafts()).resolves.toEqual([]);
     });
+
+    it('discards parked saves when the queue is blocked and restores the suspended walk', async () => {
+      const { store, walk } = await setupWalk();
+      const photo = await store.appendPhoto(makePhotoInput({ note: 'Exported note' }));
+      await store.saveRecentExport({ walk, photos: [photo], filename: 'original.pdf', pdf });
+      const opened = await store.beginExportEdit(walk.id, { scrollY: 200, photoId: photo.id });
+      if (opened.status !== 'ok') throw new Error('Expected the edit session');
+
+      setDbTestHooks({
+        beforeQueuedTransaction(op) {
+          if (op === 'updateNote') throw new StorageError('transaction', 'injected');
+        },
+      });
+      // The failed note autosave blocks the queue: non-retry jobs reject
+      // without running, so finishing the edit normally is impossible.
+      await expect(store.updateNote(opened.photos[0]!.id, 'Unsavable note')).rejects.toThrow('injected');
+      resetDbTestHooks();
+      await expect(store.finishExportEdit()).rejects.toThrow('injected');
+
+      await expect(store.discardExportEdit()).resolves.toMatchObject({
+        walk: { id: walk.id },
+        photos: [{ id: photo.id, note: 'Exported note' }],
+      });
+      expect(await store.getExportEdit()).toBeUndefined();
+      expect(await store.listRecentExports()).toMatchObject([{ filename: 'original.pdf' }]);
+      await expect(store.hydrate()).resolves.toMatchObject({
+        walk: { id: walk.id },
+        photos: [{ id: photo.id, note: 'Exported note' }],
+      });
+    });
   });
 
   describe('parked drafts', () => {

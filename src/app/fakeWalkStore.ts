@@ -215,6 +215,19 @@ export function createFakeWalkStore(options: FakeWalkStoreOptions = {}): FakeWal
       return store.hydrate();
     },
 
+    discardExportEdit: async () => {
+      if (!edit) throw new StorageError('transaction', 'No export is being edited.');
+      walk = edit.walk;
+      photos = edit.photos;
+      edit = undefined;
+      // Mirror the real store: dropping the parked saves lets the queue
+      // drain, which clears the 'save-failed' latch.
+      saveState = 'saved';
+      saveError = undefined;
+      notify();
+      return store.hydrate();
+    },
+
     listDrafts: async () =>
       [...drafts.values()]
         .map(({ walk, photos }) => ({

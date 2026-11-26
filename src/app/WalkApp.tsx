@@ -170,6 +170,9 @@ export function WalkApp({ deps }: WalkAppProps) {
   const exportLocked = inFlightCount > 0 || switchingWalk || removingId !== null;
   const mutationsLocked = exporting || walkPrompt !== null || recentPrompt !== null || switchingWalk;
   const writeBusy = readOnly || exportLocked || pauseBusy || retrySaveBusy || saveState !== 'saved';
+  // Cancel edit stays available on 'save-failed': the discard path is the
+  // escape hatch that keeps the interrupted walk reachable.
+  const cancelEditLocked = readOnly || exportLocked || pauseBusy || retrySaveBusy;
   const walkSwitchLocked = writeBusy || mutationsLocked || !!exportEdit;
   const hasCurrentWork = !!walk || jobIdInput.trim() !== '' || failedImports.length > 0;
 
@@ -473,11 +476,16 @@ export function WalkApp({ deps }: WalkAppProps) {
   };
 
   const cancelExportEdit = async () => {
-    if (!exportEdit || writeBusy || recentBusy) return;
+    if (!exportEdit || cancelEditLocked || recentBusy) return;
     setRecentBusy(true);
     setRecentError(null);
     try {
-      const next = await storeRef.current!.finishExportEdit();
+      // A blocked save queue rejects finishExportEdit outright; discard drops
+      // the parked edit saves so the interrupted walk stays reachable even
+      // when saving keeps failing.
+      const next = saveState === 'save-failed'
+        ? await storeRef.current!.discardExportEdit()
+        : await storeRef.current!.finishExportEdit();
       restoreWalk(next, exportEdit);
       resetExportArtifact();
       setRecentPrompt(null);
@@ -704,7 +712,7 @@ export function WalkApp({ deps }: WalkAppProps) {
         </button>
         <button
           type="button"
-          disabled={exportEdit ? writeBusy || mutationsLocked : !hasCurrentWork || walkSwitchLocked}
+          disabled={exportEdit ? cancelEditLocked || mutationsLocked : !hasCurrentWork || walkSwitchLocked}
           onClick={() => {
             if (exportEdit) {
               setRecentError(null);

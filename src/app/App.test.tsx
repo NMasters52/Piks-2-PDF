@@ -466,6 +466,49 @@ describe('export lifecycle regressions (review fixes)', () => {
   });
 });
 
+describe('export edit cancellation on save failure (review fix)', () => {
+  it('keeps Cancel edit reachable when saving fails and restores the suspended walk', async () => {
+    const store = createFakeWalkStore();
+    const deps = buildTestDeps(store, {
+      renderPdf: async () => ({ bytes: new Uint8Array([1]), filename: 'edited.pdf' }),
+    });
+    const { user } = renderApp(deps);
+    await waitForReady();
+
+    await user.type(screen.getByLabelText(/job \/ lot id/i), 'JOB-1');
+    await user.upload(libraryInput(), jpegFile('a.jpg'));
+    await waitFor(() => expect(screen.getByText(/Photo 1/i)).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: /^export pdf$/i }));
+    await waitFor(() => expect(screen.getByText(/PDF ready/i)).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: /dismiss/i }));
+
+    await user.click(screen.getByRole('button', { name: /recent exports/i }));
+    const history = await screen.findByRole('dialog', { name: /recent exports/i });
+    await user.click(within(history).getByRole('button', { name: /edit walk/i }));
+    await screen.findByText(/editing a recent export/i);
+
+    store.injectSaveFailure();
+    const note = await screen.findByLabelText(/note \(optional\)/i);
+    await user.type(note, 'x');
+    await screen.findByText(/save failed/i);
+
+    // The fix: Cancel edit stays reachable despite the failed autosave, and
+    // the discard path restores the interrupted walk.
+    const cancel = screen.getByRole('button', { name: /^cancel edit$/i });
+    expect(cancel).toBeEnabled();
+    await user.click(cancel);
+    const confirm = await screen.findByRole('dialog', { name: /discard edits/i });
+    await user.click(within(confirm).getByRole('button', { name: /discard edits/i }));
+
+    await waitFor(() => expect(screen.getByText(/saved on this device/i)).toBeInTheDocument());
+    expect(screen.getByLabelText(/job \/ lot id/i)).toHaveValue('JOB-1');
+    expect(screen.getByText(/Photo 1/i)).toBeInTheDocument();
+    expect(screen.queryByText(/editing a recent export/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+});
+
 it('explains a blocked database upgrade and finishes loading when the old connection closes', async () => {
   const db = await import('../lib/db');
   await db.resetDbConnectionForTests();

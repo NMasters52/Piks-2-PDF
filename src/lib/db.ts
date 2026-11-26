@@ -120,6 +120,11 @@ export interface WalkStore {
   getExportEdit(): Promise<ExportEdit | undefined>;
   beginExportEdit(id: string, position: Omit<ExportEdit, 'previous'>): Promise<HydrationResult>;
   finishExportEdit(artifact?: ExportArtifact): Promise<HydrationResult>;
+  /** Abandon the active export edit without saving a corrected PDF, dropping
+   *  any autosaves parked behind a blocked save queue. Escape hatch for the
+   *  'save-failed' state, where finishExportEdit cannot enqueue; the previous
+   *  history entry and the suspended walk are restored untouched. */
+  discardExportEdit(): Promise<HydrationResult>;
   listDrafts(): Promise<ParkedDraft[]>;
   /** Park or discard the current walk and optionally reopen a parked draft in one commit. */
   switchWalk(options: SwitchWalkOptions): Promise<HydrationResult>;
@@ -337,11 +342,25 @@ class WalkStoreImpl implements WalkStore {
     this.emit('save-failed', error);
   }
 
-  private enqueue<T>(label: string, run: () => Promise<T>, retryOnFailure = true): Promise<T> {
+  private enqueue<T>(
+    label: string,
+    run: () => Promise<T>,
+    retryOnFailure = true,
+    abandonPending = false,
+  ): Promise<T> {
     return new Promise<T>((resolve, reject) => {
-      if (!retryOnFailure && this.blockedJob) {
-        reject(this.lastError);
-        return;
+      if (this.blockedJob) {
+        if (abandonPending) {
+          // Drop the autosaves parked behind the blocked queue — they target
+          // the edit walk being discarded — and clear the failure latch so
+          // this job can run and the queue drains normally afterwards. The
+          // blocked job itself was already rejected when the queue stalled.
+          this.pending = [];
+          this.blockedJob = null;
+        } else if (!retryOnFailure) {
+          reject(this.lastError);
+          return;
+        }
       }
       const job: QueueJob<T> = { label, run, resolve, reject, retryOnFailure };
       this.pending.push(job as QueueJob<unknown>);
@@ -679,45 +698,51 @@ class WalkStoreImpl implements WalkStore {
   }
 
   finishExportEdit(artifact?: ExportArtifact): Promise<HydrationResult> {
-    return this.enqueue('finishExportEdit', async () => {
-      await dbTestHooks.beforeQueuedTransaction?.('finishExportEdit');
-      const db = await openDatabase();
-      const tx = db.transaction(['recentExports', 'exportEdit', 'walks', 'photos'], 'readwrite');
-      const walks = tx.objectStore('walks');
-      const session = tx.objectStore('exportEdit');
-      const photoStore = tx.objectStore('photos');
-      const byWalk = photoStore.index('byWalkId');
-      try {
-        const [edit, [walk]] = await Promise.all([session.get('current'), walks.getAll()]);
-        if (!edit || !walk) throw new StorageError('transaction', 'No export is being edited.');
-        const photos = await byWalk.getAll(walk.id);
-        if (artifact) {
-          const history = tx.objectStore('recentExports');
-          const entries = await history.getAll();
-          const latest = Math.max(0, ...entries.map((entry) => entry.exportedAt));
-          await history.put({
-            ...artifact,
-            walk: { ...walk, id: edit.sourceId },
-            photos: sortPhotos(photos.map((photo) => ({ ...photo, walkId: edit.sourceId }))),
-            exportedAt: Math.max(Date.now(), latest + 1),
-          });
-        }
-        await Promise.all(photos.map((photo) => photoStore.delete(photo.id)));
-        await walks.delete(walk.id);
-        await session.delete('current');
-        const suspended = edit.suspendedWalk;
-        const restoredPhotos = suspended ? await byWalk.getAll(suspended.id) : [];
-        if (suspended) await walks.put(suspended);
-        await tx.done;
-        return suspended
-          ? { status: 'ok', walk: suspended, photos: sortPhotos(restoredPhotos) }
-          : { status: 'empty' };
-      } catch (error) {
-        try { tx.abort(); } catch { /* Already aborted. */ }
-        await tx.done.catch(() => undefined);
-        throw error;
+    return this.enqueue('finishExportEdit', () => this.finishEditTransaction(artifact), false);
+  }
+
+  discardExportEdit(): Promise<HydrationResult> {
+    return this.enqueue('discardExportEdit', () => this.finishEditTransaction(undefined), false, true);
+  }
+
+  private async finishEditTransaction(artifact?: ExportArtifact): Promise<HydrationResult> {
+    await dbTestHooks.beforeQueuedTransaction?.('finishExportEdit');
+    const db = await openDatabase();
+    const tx = db.transaction(['recentExports', 'exportEdit', 'walks', 'photos'], 'readwrite');
+    const walks = tx.objectStore('walks');
+    const session = tx.objectStore('exportEdit');
+    const photoStore = tx.objectStore('photos');
+    const byWalk = photoStore.index('byWalkId');
+    try {
+      const [edit, [walk]] = await Promise.all([session.get('current'), walks.getAll()]);
+      if (!edit || !walk) throw new StorageError('transaction', 'No export is being edited.');
+      const photos = await byWalk.getAll(walk.id);
+      if (artifact) {
+        const history = tx.objectStore('recentExports');
+        const entries = await history.getAll();
+        const latest = Math.max(0, ...entries.map((entry) => entry.exportedAt));
+        await history.put({
+          ...artifact,
+          walk: { ...walk, id: edit.sourceId },
+          photos: sortPhotos(photos.map((photo) => ({ ...photo, walkId: edit.sourceId }))),
+          exportedAt: Math.max(Date.now(), latest + 1),
+        });
       }
-    }, false);
+      await Promise.all(photos.map((photo) => photoStore.delete(photo.id)));
+      await walks.delete(walk.id);
+      await session.delete('current');
+      const suspended = edit.suspendedWalk;
+      const restoredPhotos = suspended ? await byWalk.getAll(suspended.id) : [];
+      if (suspended) await walks.put(suspended);
+      await tx.done;
+      return suspended
+        ? { status: 'ok', walk: suspended, photos: sortPhotos(restoredPhotos) }
+        : { status: 'empty' };
+    } catch (error) {
+      try { tx.abort(); } catch { /* Already aborted. */ }
+      await tx.done.catch(() => undefined);
+      throw error;
+    }
   }
 
   async listDrafts(): Promise<ParkedDraft[]> {
