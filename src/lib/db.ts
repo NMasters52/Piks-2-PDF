@@ -38,6 +38,28 @@ export const MAX_PARKED_DRAFTS = 3;
 
 export type ParkedDraft = Pick<Walk, 'id' | 'jobId' | 'updatedAt'> & { photoCount: number };
 
+const MAX_RECENT_EXPORTS = 3;
+
+export type ExportArtifact = { filename: string; pdf: Blob };
+export type RecentExport = ExportArtifact & {
+  walk: Walk;
+  photos: WalkPhoto[];
+  exportedAt: number;
+};
+
+export type ExportEdit = {
+  previous: ExportArtifact;
+  scrollY: number;
+  photoId?: string;
+  photoOffset?: number;
+  unstartedJobId?: string;
+};
+
+type StoredExportEdit = ExportEdit & {
+  sourceId: string;
+  suspendedWalk?: Walk;
+};
+
 export type SwitchWalkOptions = {
   current: 'park' | 'discard' | 'none';
   draftId?: string;
@@ -93,6 +115,11 @@ export interface WalkStore {
   setStatus(status: WalkStatus): Promise<void>;
   /** Transactional full clear of walk + photos. Caller confirms first. */
   clearWalk(): Promise<void>;
+  listRecentExports(): Promise<RecentExport[]>;
+  saveRecentExport(entry: Omit<RecentExport, 'exportedAt'>): Promise<void>;
+  getExportEdit(): Promise<ExportEdit | undefined>;
+  beginExportEdit(id: string, position: Omit<ExportEdit, 'previous'>): Promise<HydrationResult>;
+  finishExportEdit(artifact?: ExportArtifact): Promise<HydrationResult>;
   listDrafts(): Promise<ParkedDraft[]>;
   /** Park or discard the current walk and optionally reopen a parked draft in one commit. */
   switchWalk(options: SwitchWalkOptions): Promise<HydrationResult>;
@@ -107,13 +134,21 @@ export interface WalkStore {
 }
 
 const DB_NAME = 'pik-2-pdf';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const WRITER_LOCK = 'pik-2-pdf-writer';
 
 interface Pik2PdfDbSchema extends DBSchema {
   walks: {
     key: string;
     value: Walk;
+  };
+  recentExports: {
+    key: string;
+    value: RecentExport;
+  };
+  exportEdit: {
+    key: string;
+    value: StoredExportEdit;
   };
   drafts: {
     key: string;
@@ -218,6 +253,10 @@ function openDatabase(): Promise<IDBPDatabase<Pik2PdfDbSchema>> {
         }
         if (oldVersion < 2) {
           db.createObjectStore('drafts', { keyPath: 'id' });
+        }
+        if (oldVersion < 3) {
+          db.createObjectStore('recentExports', { keyPath: 'walk.id' });
+          db.createObjectStore('exportEdit');
         }
         // Future: non-destructive migrations only — never drop stores here.
         void transaction;
@@ -564,6 +603,121 @@ class WalkStoreImpl implements WalkStore {
       await tx.objectStore('walks').delete(walk.id);
       await tx.done;
     });
+  }
+
+  async listRecentExports(): Promise<RecentExport[]> {
+    const db = await openDatabase();
+    const entries = await db.getAll('recentExports');
+    return entries.sort((a, b) => b.exportedAt - a.exportedAt);
+  }
+
+  saveRecentExport(entry: Omit<RecentExport, 'exportedAt'>): Promise<void> {
+    return this.enqueue('saveRecentExport', async () => {
+      await dbTestHooks.beforeQueuedTransaction?.('saveRecentExport');
+      const db = await openDatabase();
+      const tx = db.transaction('recentExports', 'readwrite');
+      try {
+        const entries = (await tx.store.getAll()).sort((a, b) => b.exportedAt - a.exportedAt);
+        // Keep a strict ordering even if two exports share a clock tick.
+        const exportedAt = Math.max(Date.now(), (entries[0]?.exportedAt ?? 0) + 1);
+        const evicted = entries.filter(({ walk }) => walk.id !== entry.walk.id)
+          .slice(MAX_RECENT_EXPORTS - 1);
+        for (const { walk } of evicted) await tx.store.delete(walk.id);
+        await tx.store.put({ ...entry, exportedAt });
+        await tx.done;
+      } catch (error) {
+        try { tx.abort(); } catch { /* Already aborted. */ }
+        await tx.done.catch(() => undefined);
+        throw error;
+      }
+    }, false);
+  }
+
+  async getExportEdit(): Promise<ExportEdit | undefined> {
+    const db = await openDatabase();
+    return db.get('exportEdit', 'current');
+  }
+
+  beginExportEdit(id: string, position: Omit<ExportEdit, 'previous'>): Promise<HydrationResult> {
+    return this.enqueue('beginExportEdit', async () => {
+      await dbTestHooks.beforeQueuedTransaction?.('beginExportEdit');
+      const db = await openDatabase();
+      const tx = db.transaction(['recentExports', 'exportEdit', 'walks', 'photos'], 'readwrite');
+      const walks = tx.objectStore('walks');
+      const session = tx.objectStore('exportEdit');
+      try {
+        const [entry, edit, [suspendedWalk]] = await Promise.all([
+          tx.objectStore('recentExports').get(id),
+          session.get('current'),
+          walks.getAll(),
+        ]);
+        if (!entry || edit) throw new StorageError('transaction', 'This export cannot be edited.');
+        // Use fresh keys because the same walk may still be active or parked.
+        const walk: Walk = { ...entry.walk, id: crypto.randomUUID(), status: 'active' };
+        const photos = entry.photos.map((photo) => ({
+          ...photo,
+          id: crypto.randomUUID(),
+          walkId: walk.id,
+        }));
+        if (suspendedWalk) await walks.delete(suspendedWalk.id);
+        await walks.put(walk);
+        await Promise.all(photos.map((photo) => tx.objectStore('photos').put(photo)));
+        await session.put({
+          ...position,
+          sourceId: id,
+          suspendedWalk,
+          previous: { filename: entry.filename, pdf: entry.pdf },
+        }, 'current');
+        await tx.done;
+        return { status: 'ok', walk, photos: sortPhotos(photos) };
+      } catch (error) {
+        try { tx.abort(); } catch { /* Already aborted. */ }
+        await tx.done.catch(() => undefined);
+        throw error;
+      }
+    }, false);
+  }
+
+  finishExportEdit(artifact?: ExportArtifact): Promise<HydrationResult> {
+    return this.enqueue('finishExportEdit', async () => {
+      await dbTestHooks.beforeQueuedTransaction?.('finishExportEdit');
+      const db = await openDatabase();
+      const tx = db.transaction(['recentExports', 'exportEdit', 'walks', 'photos'], 'readwrite');
+      const walks = tx.objectStore('walks');
+      const session = tx.objectStore('exportEdit');
+      const photoStore = tx.objectStore('photos');
+      const byWalk = photoStore.index('byWalkId');
+      try {
+        const [edit, [walk]] = await Promise.all([session.get('current'), walks.getAll()]);
+        if (!edit || !walk) throw new StorageError('transaction', 'No export is being edited.');
+        const photos = await byWalk.getAll(walk.id);
+        if (artifact) {
+          const history = tx.objectStore('recentExports');
+          const entries = await history.getAll();
+          const latest = Math.max(0, ...entries.map((entry) => entry.exportedAt));
+          await history.put({
+            ...artifact,
+            walk: { ...walk, id: edit.sourceId },
+            photos: sortPhotos(photos.map((photo) => ({ ...photo, walkId: edit.sourceId }))),
+            exportedAt: Math.max(Date.now(), latest + 1),
+          });
+        }
+        await Promise.all(photos.map((photo) => photoStore.delete(photo.id)));
+        await walks.delete(walk.id);
+        await session.delete('current');
+        const suspended = edit.suspendedWalk;
+        const restoredPhotos = suspended ? await byWalk.getAll(suspended.id) : [];
+        if (suspended) await walks.put(suspended);
+        await tx.done;
+        return suspended
+          ? { status: 'ok', walk: suspended, photos: sortPhotos(restoredPhotos) }
+          : { status: 'empty' };
+      } catch (error) {
+        try { tx.abort(); } catch { /* Already aborted. */ }
+        await tx.done.catch(() => undefined);
+        throw error;
+      }
+    }, false);
   }
 
   async listDrafts(): Promise<ParkedDraft[]> {

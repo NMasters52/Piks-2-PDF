@@ -1,4 +1,4 @@
-import { MAX_PARKED_DRAFTS, StorageError, type WalkStore } from '../lib/db';
+import { MAX_PARKED_DRAFTS, StorageError, type ExportEdit, type RecentExport, type WalkStore } from '../lib/db';
 import {
   MAX_PHOTOS,
   type HydrationResult,
@@ -40,6 +40,9 @@ export function createFakeWalkStore(options: FakeWalkStoreOptions = {}): FakeWal
   let photos: WalkPhoto[] =
     initialHydration.status === 'ok' ? initialHydration.photos.map((p) => ({ ...p })) : [];
   const drafts = new Map<string, { walk: Walk; photos: WalkPhoto[] }>();
+  const recentExports = new Map<string, RecentExport>();
+  let edit: (ExportEdit & { sourceId: string; walk: Walk | null; photos: WalkPhoto[] }) | undefined;
+  let exportOrder = Date.now();
   let saveState: SaveState = initialSaveState;
   let saveError: StorageError | undefined =
     initialSaveState === 'save-failed'
@@ -172,6 +175,44 @@ export function createFakeWalkStore(options: FakeWalkStoreOptions = {}): FakeWal
         walk = null;
         photos = [];
       });
+    },
+
+    listRecentExports: async () => [...recentExports.values()].reverse(),
+
+    saveRecentExport: async (entry) => {
+      recentExports.delete(entry.walk.id);
+      recentExports.set(entry.walk.id, { ...entry, exportedAt: ++exportOrder });
+      if (recentExports.size > 3) recentExports.delete(recentExports.keys().next().value!);
+    },
+
+    getExportEdit: async () => edit,
+
+    beginExportEdit: async (id, position) => {
+      const entry = recentExports.get(id);
+      if (!entry || edit) throw new StorageError('transaction', 'This export cannot be edited.');
+      edit = { ...position, previous: entry, sourceId: id, walk, photos };
+      walk = { ...entry.walk, id: `walk-${nextWalkId++}`, status: 'active' };
+      photos = entry.photos.map((photo) => ({
+        ...photo,
+        id: `photo-${nextPhotoId++}`,
+        walkId: walk!.id,
+      }));
+      return store.hydrate();
+    },
+
+    finishExportEdit: async (artifact) => {
+      if (!edit || !walk) throw new StorageError('transaction', 'No export is being edited.');
+      if (artifact) {
+        await store.saveRecentExport({
+          ...artifact,
+          walk: { ...walk, id: edit.sourceId },
+          photos: photos.map((photo) => ({ ...photo, walkId: edit!.sourceId })),
+        });
+      }
+      walk = edit.walk;
+      photos = edit.photos;
+      edit = undefined;
+      return store.hydrate();
     },
 
     listDrafts: async () =>

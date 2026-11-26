@@ -43,6 +43,71 @@ describe('WalkStore', () => {
     resetWriterLockForTests();
   });
 
+  describe('recent exports', () => {
+    const pdf = new Blob(['original'], { type: 'application/pdf' });
+
+    it('keeps the latest three distinct walks even when all exports share a clock tick', async () => {
+      const { store, walk } = await setupWalk();
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(100);
+      try {
+        const save = (id: string, filename = `${id}.pdf`) =>
+          store.saveRecentExport({ walk: { ...walk, id }, photos: [], filename, pdf });
+        await save('first');
+        await save('second');
+        await save('third');
+        await save('first', 'first-again.pdf');
+        await save('fourth');
+
+        const entries = await store.listRecentExports();
+        expect(entries.map((entry) => entry.filename)).toEqual([
+          'fourth.pdf', 'first-again.pdf', 'third.pdf',
+        ]);
+        const brokenPdf = (() => undefined) as unknown as Blob;
+        await expect(store.saveRecentExport({
+          walk: { ...walk, id: 'fifth' }, photos: [], filename: 'fifth.pdf', pdf: brokenPdf,
+        })).rejects.toThrow();
+        expect((await store.listRecentExports()).map((entry) => entry.filename)).toEqual(
+          entries.map((entry) => entry.filename),
+        );
+      } finally {
+        clock.mockRestore();
+      }
+    });
+
+    it('isolates edits to an active walk and rolls back a failed replacement', async () => {
+      const { store, walk } = await setupWalk();
+      const photo = await store.appendPhoto(makePhotoInput({ note: 'Exported note' }));
+      await store.saveRecentExport({ walk, photos: [photo], filename: 'original.pdf', pdf });
+      await store.updateNote(photo.id, 'Interrupted note');
+      await store.beginExportEdit(walk.id, { scrollY: 200, photoId: photo.id });
+      await resetDbConnectionForTests();
+      const reloaded = createWalkStore();
+      const opened = await reloaded.hydrate();
+      expect(opened.status).toBe('ok');
+      if (opened.status !== 'ok') throw new Error('Expected the edit session');
+      expect(opened.photos[0]).toMatchObject({ note: 'Exported note' });
+      expect(opened.photos[0].id).not.toBe(photo.id);
+      await reloaded.updateNote(opened.photos[0].id, 'Corrected note');
+
+      const brokenPdf = (() => undefined) as unknown as Blob;
+      await expect(reloaded.finishExportEdit({ filename: 'bad.pdf', pdf: brokenPdf })).rejects.toThrow();
+      expect(await reloaded.getExportEdit()).toMatchObject({
+        scrollY: 200, photoId: photo.id, previous: { filename: 'original.pdf' },
+      });
+      expect(await reloaded.listRecentExports()).toMatchObject([{ filename: 'original.pdf' }]);
+      expect(await reloaded.hydrate()).toMatchObject({ photos: [{ note: 'Corrected note' }] });
+
+      await expect(reloaded.finishExportEdit({ filename: 'corrected.pdf', pdf })).resolves.toMatchObject({
+        walk: { id: walk.id }, photos: [{ id: photo.id, note: 'Interrupted note' }],
+      });
+      expect(await reloaded.getExportEdit()).toBeUndefined();
+      expect(await reloaded.listRecentExports()).toMatchObject([{
+        filename: 'corrected.pdf', walk: { id: walk.id }, photos: [{ note: 'Corrected note' }],
+      }]);
+      await expect(reloaded.listDrafts()).resolves.toEqual([]);
+    });
+  });
+
   describe('parked drafts', () => {
     it('upgrades a v1 active walk and preserves its photos and notes', async () => {
       const previous = await openDB(DB_NAME, 1, {
