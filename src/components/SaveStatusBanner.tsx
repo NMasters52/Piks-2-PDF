@@ -18,15 +18,15 @@ export function SaveStatusBanner({
 }: SaveStatusBannerProps) {
   if (saveState === 'saved') {
     return (
-      <p className="mb-3 text-sm" role="status" aria-live="polite">
-        Saved
+      <p className="text-xs text-neutral-600" role="status" aria-live="polite">
+        Saved on this device
       </p>
     );
   }
 
   if (saveState === 'unsaved') {
     return (
-      <p className="mb-3 text-sm" role="status" aria-live="polite">
+      <p className="text-xs text-neutral-600" role="status" aria-live="polite">
         Unsaved changes…
       </p>
     );

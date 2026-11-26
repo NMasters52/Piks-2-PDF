@@ -1,5 +1,4 @@
 type ExportControlsProps = {
-  photoCount: number;
   exporting: boolean;
   exportProgress?: { photosDone: number; totalPhotos: number } | null;
   exportError?: string | null;
@@ -12,7 +11,6 @@ type ExportControlsProps = {
 };
 
 export function ExportControls({
-  photoCount,
   exporting,
   exportProgress,
   exportError,
@@ -26,9 +24,6 @@ export function ExportControls({
 
   return (
     <div>
-      {photoCount === 0 ? (
-        <p className="mt-2 text-xs text-neutral-700">Add at least one photo to export.</p>
-      ) : null}
       {exporting && exportProgress ? (
         <p className="mt-2 text-sm" role="status" aria-live="polite">
           Preparing PDF: {exportProgress.photosDone} of {exportProgress.totalPhotos} photos

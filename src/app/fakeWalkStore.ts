@@ -1,4 +1,4 @@
-import { StorageError, type WalkStore } from '../lib/db';
+import { MAX_PARKED_DRAFTS, StorageError, type WalkStore } from '../lib/db';
 import {
   MAX_PHOTOS,
   type HydrationResult,
@@ -15,9 +15,11 @@ export type FakeWalkStoreOptions = {
 };
 
 let nextPhotoId = 1;
+let nextWalkId = 1;
 
 export function resetFakeWalkStoreIds(): void {
   nextPhotoId = 1;
+  nextWalkId = 1;
 }
 
 export type FakeWalkStore = WalkStore & {
@@ -37,6 +39,7 @@ export function createFakeWalkStore(options: FakeWalkStoreOptions = {}): FakeWal
     initialHydration.status === 'ok' ? { ...initialHydration.walk } : null;
   let photos: WalkPhoto[] =
     initialHydration.status === 'ok' ? initialHydration.photos.map((p) => ({ ...p })) : [];
+  const drafts = new Map<string, { walk: Walk; photos: WalkPhoto[] }>();
   let saveState: SaveState = initialSaveState;
   let saveError: StorageError | undefined =
     initialSaveState === 'save-failed'
@@ -99,7 +102,7 @@ export function createFakeWalkStore(options: FakeWalkStoreOptions = {}): FakeWal
     createWalk: async (jobId: string) => {
       const now = Date.now();
       walk = {
-        id: 'walk-1',
+        id: `walk-${nextWalkId++}`,
         jobId,
         createdAt: now,
         updatedAt: now,
@@ -169,6 +172,41 @@ export function createFakeWalkStore(options: FakeWalkStoreOptions = {}): FakeWal
         walk = null;
         photos = [];
       });
+    },
+
+    listDrafts: async () =>
+      [...drafts.values()]
+        .map(({ walk, photos }) => ({
+          id: walk.id,
+          jobId: walk.jobId,
+          updatedAt: walk.updatedAt,
+          photoCount: photos.length,
+        }))
+        .sort((first, second) => first.updatedAt - second.updatedAt || first.id.localeCompare(second.id)),
+
+    switchWalk: async ({ current, draftId, replaceDraftId }) => {
+      const draft = draftId ? drafts.get(draftId) : undefined;
+      const replacementRequired = drafts.size - Number(Boolean(draft)) >= MAX_PARKED_DRAFTS;
+      if (
+        (draftId && !draft) ||
+        (current === 'none' && walk) ||
+        (current === 'park' && !walk) ||
+        (replaceDraftId && (
+          current !== 'park' || !replacementRequired ||
+          replaceDraftId === draftId || !drafts.has(replaceDraftId)
+        )) ||
+        (current === 'park' && replacementRequired && !replaceDraftId)
+      ) {
+        throw new StorageError('transaction', 'Cannot switch walks', { precondition: true });
+      }
+      await enqueue(async () => {
+        if (draftId) drafts.delete(draftId);
+        if (replaceDraftId) drafts.delete(replaceDraftId);
+        if (current === 'park' && walk) drafts.set(walk.id, { walk, photos });
+        walk = draft ? { ...draft.walk, status: 'active' } : null;
+        photos = draft?.photos ?? [];
+      });
+      return store.hydrate();
     },
 
     subscribeSaveState: (listener) => {

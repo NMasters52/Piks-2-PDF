@@ -18,7 +18,10 @@ export function PhotoQueue({
 }: PhotoQueueProps) {
   if (photos.length === 0) {
     return (
-      <p className="mb-4 text-sm text-neutral-700">No photos yet. Take or add photos to begin.</p>
+      <div className="rounded-lg border border-dashed border-neutral-300 bg-neutral-50 px-4 py-10 text-center">
+        <p className="font-semibold">No photos yet</p>
+        <p className="mt-1 text-sm text-neutral-600">Take a photo or add one from your library to begin.</p>
+      </div>
     );
   }
 

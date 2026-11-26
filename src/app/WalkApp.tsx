@@ -1,10 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { StorageError, type WalkStore } from '../lib/db';
+import {
+  MAX_PARKED_DRAFTS,
+  StorageError,
+  type ParkedDraft,
+  type SwitchWalkOptions,
+  type WalkStore,
+} from '../lib/db';
 import { DecodeError } from '../lib/images';
 import { PdfExportError, type ExportSnapshot } from '../lib/pdf';
 import { CaptureControls } from '../components/CaptureControls';
 import { CapacityIndicator } from '../components/CapacityIndicator';
-import { ClearWalkDialog } from '../components/ClearWalkDialog';
 import { ExportControls } from '../components/ExportControls';
 import {
   FailedImportList,
@@ -15,6 +20,7 @@ import { PauseResumeControls } from '../components/PauseResumeControls';
 import { PhotoQueue } from '../components/PhotoQueue';
 import { ReadOnlyBanner } from '../components/ReadOnlyBanner';
 import { SaveStatusBanner } from '../components/SaveStatusBanner';
+import { WalkSwitchDialog, type WalkPrompt } from '../components/WalkSwitchDialog';
 import {
   MAX_PHOTOS,
   canAcceptSelection,
@@ -46,6 +52,7 @@ export function WalkApp({ deps }: WalkAppProps) {
   const importChainRef = useRef<Promise<void>>(Promise.resolve());
 
   const [hydrating, setHydrating] = useState(true);
+  const [upgradeBlocked, setUpgradeBlocked] = useState(false);
   const [readOnly, setReadOnly] = useState(false);
   const [walk, setWalk] = useState<Walk | null>(null);
   const [photos, setPhotos] = useState<WalkPhoto[]>([]);
@@ -60,8 +67,12 @@ export function WalkApp({ deps }: WalkAppProps) {
   const [removingId, setRemovingId] = useState<string | null>(null);
   const [pauseBusy, setPauseBusy] = useState(false);
   const [retrySaveBusy, setRetrySaveBusy] = useState(false);
-  const [clearOpen, setClearOpen] = useState(false);
-  const [clearing, setClearing] = useState(false);
+  const [walkPrompt, setWalkPrompt] = useState<WalkPrompt | null>(null);
+  const [drafts, setDrafts] = useState<ParkedDraft[]>([]);
+  const [loadingDrafts, setLoadingDrafts] = useState(false);
+  const [switchingWalk, setSwitchingWalk] = useState(false);
+  const [walkSwitchError, setWalkSwitchError] = useState<string | null>(null);
+  const draftRequestRef = useRef(0);
   const [exporting, setExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState<{
     photosDone: number;
@@ -92,7 +103,9 @@ export function WalkApp({ deps }: WalkAppProps) {
         return;
       }
       setReadOnly(!writable);
-      const hydration = await nextStore.hydrate();
+      const hydration = await nextStore.hydrate(() => {
+        if (!cancelled) setUpgradeBlocked(true);
+      });
       if (cancelled) return;
       if (hydration.status === 'ok') {
         setWalk(hydration.walk);
@@ -105,6 +118,7 @@ export function WalkApp({ deps }: WalkAppProps) {
           setSaveError(err);
         }
       });
+      setUpgradeBlocked(false);
       setHydrating(false);
     })();
 
@@ -126,8 +140,10 @@ export function WalkApp({ deps }: WalkAppProps) {
 
   // Mutual exclusion (playbook: prevent import/export/clear races; disable
   // mutations during snapshot/export for this MVP).
-  const exportLocked = inFlightCount > 0 || clearing || removingId !== null;
-  const mutationsLocked = exporting;
+  const exportLocked = inFlightCount > 0 || switchingWalk || removingId !== null;
+  const mutationsLocked = exporting || walkPrompt !== null || switchingWalk;
+  const walkSwitchLocked = readOnly || mutationsLocked || exportLocked || pauseBusy || retrySaveBusy || saveState !== 'saved';
+  const hasCurrentWork = !!walk || jobIdInput.trim() !== '' || failedImports.length > 0;
 
   const captureDisabledReason = useMemo(() => {
     if (readOnly) return 'This tab is read-only.';
@@ -246,7 +262,7 @@ export function WalkApp({ deps }: WalkAppProps) {
   );
 
   const handleFileSelection = (fileList: FileList | null) => {
-    if (!fileList || fileList.length === 0) return;
+    if (mutationsLocked || !fileList || fileList.length === 0) return;
     const files = Array.from(fileList);
     processFilesInOrder(files);
   };
@@ -448,27 +464,78 @@ export function WalkApp({ deps }: WalkAppProps) {
     a.click();
   };
 
-  const handleClearConfirm = async () => {
-    if (!storeRef.current) return;
-    setClearing(true);
+  const dismissWalkPrompt = () => {
+    draftRequestRef.current += 1;
+    setLoadingDrafts(false);
+    setWalkPrompt(null);
+    setWalkSwitchError(null);
+  };
+
+  const loadDrafts = async () => {
+    const store = storeRef.current;
+    if (!store) return;
+    const request = ++draftRequestRef.current;
+    setLoadingDrafts(true);
+    setWalkSwitchError(null);
     try {
-      await storeRef.current.clearWalk();
-      setWalk(null);
-      setPhotos([]);
-      setJobIdInput('');
+      const parked = await store.listDrafts();
+      if (draftRequestRef.current !== request) return;
+      setDrafts(parked);
+      return parked;
+    } catch {
+      if (draftRequestRef.current === request) {
+        setDrafts([]);
+        setWalkSwitchError('Could not load drafts. Try again.');
+      }
+    } finally {
+      if (draftRequestRef.current === request) setLoadingDrafts(false);
+    }
+  };
+
+  const switchWalk = async (options: SwitchWalkOptions) => {
+    const store = storeRef.current;
+    if (!store || switchingWalk) return;
+    setSwitchingWalk(true);
+    setWalkSwitchError(null);
+    try {
+      const next = await store.switchWalk(options);
+      setWalk(next.status === 'ok' ? next.walk : null);
+      setPhotos(next.status === 'ok' ? next.photos : []);
+      setJobIdInput(next.status === 'ok' ? next.walk.jobId : '');
+      importPhotoIdsRef.current.clear();
       setFailedImports([]);
       setCapacityMessage(null);
       resetExportArtifact();
-      setClearOpen(false);
+      dismissWalkPrompt();
+      window.scrollTo(0, 0);
+    } catch {
+      setWalkSwitchError('Could not switch walks. Try again or keep editing.');
     } finally {
-      setClearing(false);
+      setSwitchingWalk(false);
+    }
+  };
+
+  const parkCurrentWalk = async () => {
+    if (walkPrompt?.kind === 'reopen') {
+      await switchWalk({ current: 'park', draftId: walkPrompt.draft.id });
+      return;
+    }
+    const parked = await loadDrafts();
+    if (!parked) return;
+    if (parked.length >= MAX_PARKED_DRAFTS) {
+      setWalkPrompt({ kind: 'replace' });
+    } else {
+      await switchWalk({ current: 'park' });
     }
   };
 
   if (hydrating) {
     return (
-      <main className="mx-auto max-w-xl p-4 pb-32">
+      <main className="walk-page mx-auto min-h-dvh max-w-2xl bg-white p-4 pb-32 sm:px-6">
         <p className="text-sm">Loading walk…</p>
+        <p className="text-sm" role="status">
+          {upgradeBlocked ? 'Close or reload any other Pik-2-PDF tabs to finish loading.' : null}
+        </p>
       </main>
     );
   }
@@ -480,12 +547,34 @@ export function WalkApp({ deps }: WalkAppProps) {
     saveState === 'saved' && !walk && jobIdInput.trim() !== '' ? 'unsaved' : saveState;
 
   return (
-    <main className="mx-auto max-w-xl p-4 pb-32">
-      <h1 className="mb-1 text-xl font-bold">Pik-2-PDF</h1>
+    <main className="walk-page mx-auto min-h-dvh max-w-2xl bg-white p-4 pb-32 sm:px-6">
+      <header className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <h1 className="text-2xl font-bold tracking-tight">Pik-2-PDF</h1>
+        <div className="flex flex-wrap items-center gap-x-3">
+          <SaveStatusBanner
+            saveState={effectiveSaveState}
+            error={saveError}
+            onRetry={handleRetrySave}
+            onRecoveryExport={() => runExport(true)}
+            retrying={retrySaveBusy}
+          />
+          <button
+            type="button"
+            className="min-h-11 px-2 text-sm font-medium underline underline-offset-4 disabled:opacity-50"
+            disabled={walkSwitchLocked}
+            onClick={() => {
+              setWalkPrompt({ kind: 'drafts' });
+              void loadDrafts();
+            }}
+          >
+            Drafts
+          </button>
+        </div>
+      </header>
       <nav aria-label="Walk actions" className="walk-toolbar sticky top-0 z-10 mb-3 grid grid-cols-3 gap-2 border-b bg-white py-2 text-sm">
         <button
           type="button"
-          disabled={readOnly || exportLocked || photos.length === 0 || exporting}
+          disabled={readOnly || exportLocked || photos.length === 0 || mutationsLocked}
           onClick={() => {
             window.scrollTo(0, 0);
             void runExport(false);
@@ -495,17 +584,19 @@ export function WalkApp({ deps }: WalkAppProps) {
         </button>
         <button
           type="button"
-          disabled={readOnly || !walk || mutationsLocked || inFlightCount > 0}
-          onClick={() => setClearOpen(true)}
+          disabled={!hasCurrentWork || walkSwitchLocked}
+          onClick={() => setWalkPrompt({ kind: 'new' })}
         >
           New walk
         </button>
-        <button type="button" onClick={() => window.scrollTo(0, document.documentElement.scrollHeight)}>
+        <button type="button" disabled={!photos.length} onClick={() => window.scrollTo(0, document.documentElement.scrollHeight)}>
           Jump to bottom ↓
         </button>
       </nav>
+      <p className="mb-4 text-xs text-neutral-700">
+        Saved means on this device only — export and keep PDFs in Files as your backup.
+      </p>
       <ExportControls
-        photoCount={photos.length}
         exporting={exporting}
         exportProgress={exportProgress}
         exportError={exportError}
@@ -516,20 +607,11 @@ export function WalkApp({ deps }: WalkAppProps) {
         onDismissExport={resetExportArtifact}
         onRetryExport={() => runExport(isRecoveryExport)}
       />
-      <p className="mb-1 text-sm text-neutral-700">Cabinet photos to US Letter PDF</p>
-      <p className="mb-4 text-xs text-neutral-700">
-        Saved means on this device only — export and keep PDFs in Files as your backup.
-      </p>
+
 
       {readOnly ? <ReadOnlyBanner /> : null}
 
-      <SaveStatusBanner
-        saveState={effectiveSaveState}
-        error={saveError}
-        onRetry={handleRetrySave}
-        onRecoveryExport={() => runExport(true)}
-        retrying={retrySaveBusy}
-      />
+
 
       <JobIdField value={jobIdInput} onChange={handleJobIdChange} disabled={readOnly || mutationsLocked} />
 
@@ -574,12 +656,32 @@ export function WalkApp({ deps }: WalkAppProps) {
         removingId={removingId}
       />
 
-      <ClearWalkDialog
-        open={clearOpen}
-        onConfirm={handleClearConfirm}
-        onCancel={() => setClearOpen(false)}
-        clearing={clearing}
-      />
+      {walkPrompt && (
+        <WalkSwitchDialog
+          prompt={walkPrompt}
+          drafts={drafts}
+          loading={loadingDrafts}
+          busy={switchingWalk}
+          error={walkSwitchError}
+          canPark={!!walk}
+          onOpenDraft={(draft) => {
+            if (hasCurrentWork) {
+              setWalkSwitchError(null);
+              setWalkPrompt({ kind: 'reopen', draft });
+            } else {
+              void switchWalk({ current: 'none', draftId: draft.id });
+            }
+          }}
+          onPark={parkCurrentWalk}
+          onReplace={(replaceDraftId) => void switchWalk({ current: 'park', replaceDraftId })}
+          onDiscard={() => void switchWalk({
+            current: walk ? 'discard' : 'none',
+            draftId: walkPrompt.kind === 'reopen' ? walkPrompt.draft.id : undefined,
+          })}
+          onRetryDrafts={loadDrafts}
+          onCancel={dismissWalkPrompt}
+        />
+      )}
     </main>
   );
 }

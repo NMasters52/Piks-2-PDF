@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { cleanup, screen, waitFor, within } from '@testing-library/react';
+import { deleteDB, openDB } from 'idb';
 import { createFakeWalkStore, resetFakeWalkStoreIds } from './fakeWalkStore';
 import { buildTestDeps, jpegFile, renderApp, DecodeError, PdfExportError } from './testUtils';
 import { MAX_NOTE_CHARS, MAX_PHOTOS } from '../types/walk';
@@ -25,6 +26,47 @@ async function waitForReady() {
 function libraryInput() {
   return screen.getByLabelText(/add photos/i);
 }
+
+describe('new walk and saved drafts', () => {
+  it('keeps editing in place, parks the walk, and restores its photo and note', async () => {
+    const store = createFakeWalkStore();
+    const { user } = renderApp(buildTestDeps(store));
+    await waitForReady();
+
+    const jobId = () => screen.getByLabelText(/job \/ lot id/i);
+    const note = () => screen.getByLabelText(/note \(optional\)/i);
+    const button = (name: string) => screen.getByRole('button', { name });
+
+    await user.type(jobId(), 'Lot 42');
+    await user.upload(libraryInput(), jpegFile('cabinet.jpg'));
+    await screen.findByText('1 of 50 photos');
+    await user.type(note(), 'Check hinge alignment');
+
+    await user.click(button('New walk'));
+    await user.click(button('Keep editing'));
+    expect(note()).toHaveValue('Check hinge alignment');
+
+    await user.click(button('New walk'));
+    await user.click(button('Save draft'));
+    await screen.findByText('No photos yet');
+    expect(jobId()).toHaveValue('');
+    expect(await store.listDrafts()).toEqual([
+      expect.objectContaining({ jobId: 'Lot 42', photoCount: 1 }),
+    ]);
+
+    await user.click(screen.getByRole('button', { name: /^drafts/i }));
+    const drafts = await screen.findByRole('dialog', { name: /saved drafts/i });
+    await user.click(within(drafts).getByRole('button', { name: /lot 42/i }));
+    await screen.findByText('1 of 50 photos');
+    expect(jobId()).toHaveValue('Lot 42');
+    expect(note()).toHaveValue('Check hinge alignment');
+
+    await user.click(button('New walk'));
+    await user.click(button('Discard walk'));
+    await screen.findByText('No photos yet');
+    expect(await store.listDrafts()).toEqual([]);
+  });
+});
 
 describe('capacity and selection rejection', () => {
   it('rejects a library selection that exceeds remaining capacity with a message', async () => {
@@ -234,7 +276,7 @@ describe('clear walk confirmation', () => {
     expect(screen.getByText(/Photo 1/i)).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: /^new walk$/i }));
-    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: /^clear and start new$/i }));
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: /^discard walk$/i }));
     await waitFor(() => expect(screen.getByText(/no photos yet/i)).toBeInTheDocument());
     expect(store.getPhotos()).toHaveLength(0);
   });
@@ -422,6 +464,32 @@ describe('export lifecycle regressions (review fixes)', () => {
     await user.click(screen.getByRole('button', { name: /^retry export$/i }));
     await waitFor(() => expect(screen.getByText(/PDF ready/i)).toBeInTheDocument());
   });
+});
+
+it('explains a blocked database upgrade and finishes loading when the old connection closes', async () => {
+  const db = await import('../lib/db');
+  await db.resetDbConnectionForTests();
+  await deleteDB('pik-2-pdf');
+  const previous = await openDB('pik-2-pdf', 1, {
+    upgrade(database) {
+      database.createObjectStore('walks', { keyPath: 'id' });
+      database.createObjectStore('photos', { keyPath: 'id' }).createIndex('byWalkId', 'walkId');
+    },
+  });
+
+  const store = db.createWalkStore({ lockManager: db.createMemoryLockManager() });
+  renderApp(buildTestDeps(store));
+  try {
+    const message = 'Close or reload any other Pik-2-PDF tabs to finish loading.';
+    expect(await screen.findByText(message)).toHaveAttribute('role', 'status');
+    previous.close();
+    await waitForReady();
+    expect(screen.queryByText(message)).not.toBeInTheDocument();
+  } finally {
+    previous.close();
+    cleanup();
+    await db.resetDbConnectionForTests();
+  }
 });
 
 it('removes a recovered append from failed imports after retrying save', async () => {

@@ -35,3 +35,14 @@ body {
 .walk-toolbar > button:disabled {
   opacity: 0.5;
 }
+
+body { background: #f4f5f3; color: #202722; }
+.walk-page { box-shadow: 0 0 0 1px #e0e4df; }
+.walk-toolbar { border-color: #d9dfd9; }
+.walk-toolbar > button, .capture-bar label, .capture-bar button,
+.walk-page input[type="text"], .walk-page textarea {
+  border-color: #919c94;
+  border-radius: 6px;
+}
+.capture-bar label:first-child { background: #224b39; border-color: #224b39; color: white; }
+.walk-page button:enabled, .capture-bar label { cursor: pointer; }

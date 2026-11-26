@@ -28,8 +28,8 @@ export function CaptureControls({
     return () => window.removeEventListener('scroll', update);
   }, []);
   return (
-    <div className="fixed inset-x-0 bottom-0 z-10 mx-auto max-w-xl border-t bg-white p-2 pb-[max(.5rem,env(safe-area-inset-bottom))]">
-      <div className="grid grid-cols-3 gap-1">
+    <div className="capture-bar fixed inset-x-0 bottom-0 z-10 mx-auto max-w-2xl border-t border-neutral-200 bg-white px-4 pt-2 sm:px-6 pb-[max(.5rem,env(safe-area-inset-bottom))]">
+      <div className="grid grid-cols-3 gap-2">
         <label
           htmlFor={cameraId}
           className={`inline-flex cursor-pointer items-center justify-center border border-black px-1 py-3 text-sm font-medium focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-black ${
