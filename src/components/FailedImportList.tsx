@@ -15,7 +15,7 @@ export function FailedImportList({ failures, onRetry, retryingKey }: FailedImpor
   if (failures.length === 0) return null;
 
   return (
-    <div className="mb-4 border border-black px-3 py-2" role="alert">
+    <div className="mb-4 border border-foreground px-3 py-2" role="alert">
       <p className="text-sm font-medium">Some files could not be imported</p>
       <ul className="mt-2 flex flex-col gap-2">
         {failures.map((f) => (
@@ -28,7 +28,7 @@ export function FailedImportList({ failures, onRetry, retryingKey }: FailedImpor
               type="button"
               onClick={() => onRetry(f.key)}
               disabled={retryingKey === f.key}
-              className="border border-black px-2 py-1 text-xs focus:outline focus:outline-2 focus:outline-offset-1 focus:outline-black disabled:opacity-50"
+              className="border border-foreground px-2 py-1 text-xs focus:outline focus:outline-2 focus:outline-offset-1 focus:outline-foreground disabled:opacity-50"
             >
               {retryingKey === f.key ? 'Retrying…' : 'Retry'}
             </button>

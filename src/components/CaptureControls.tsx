@@ -28,11 +28,11 @@ export function CaptureControls({
     return () => window.removeEventListener('scroll', update);
   }, []);
   return (
-    <div className="capture-bar fixed inset-x-0 bottom-0 z-10 mx-auto max-w-2xl border-t border-neutral-200 bg-white px-4 pt-2 sm:px-6 pb-[max(.5rem,env(safe-area-inset-bottom))]">
+    <div className="capture-bar fixed inset-x-0 bottom-0 z-10 mx-auto max-w-2xl border-t border-border bg-surface px-4 pt-2 sm:px-6 pb-[max(.5rem,env(safe-area-inset-bottom))]">
       <div className="grid grid-cols-3 gap-2">
         <label
           htmlFor={cameraId}
-          className={`inline-flex cursor-pointer items-center justify-center border border-black px-1 py-3 text-sm font-medium focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-black ${
+          className={`inline-flex cursor-pointer items-center justify-center border border-foreground px-1 py-3 text-sm font-medium focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-foreground ${
             disabled ? 'cursor-not-allowed opacity-50' : ''
           }`}
         >
@@ -53,7 +53,7 @@ export function CaptureControls({
         </label>
         <label
           htmlFor={libraryId}
-          className={`inline-flex cursor-pointer items-center justify-center border border-black px-1 py-3 text-sm font-medium focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-black ${
+          className={`inline-flex cursor-pointer items-center justify-center border border-foreground px-1 py-3 text-sm font-medium focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-foreground ${
             disabled ? 'cursor-not-allowed opacity-50' : ''
           }`}
         >
@@ -72,10 +72,10 @@ export function CaptureControls({
             }}
           />
         </label>
-        <button type="button" disabled={atTop} onClick={() => window.scrollTo(0, 0)} className="border px-1 text-sm disabled:opacity-50">Back to top ↑</button>
+        <button type="button" disabled={atTop} onClick={() => window.scrollTo(0, 0)} className="border border-foreground px-1 text-sm disabled:opacity-50">Back to top ↑</button>
       </div>
       {disabled && disabledReason ? (
-        <p className="mt-2 text-sm text-neutral-700">{disabledReason}</p>
+        <p className="mt-2 text-sm text-muted">{disabledReason}</p>
       ) : null}
     </div>
   );

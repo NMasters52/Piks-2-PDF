@@ -39,7 +39,7 @@ export function pdfDateString(createdAt: number): string {
 }
 
 /** Keep filesystem-safe characters; runs of anything else become one '-';
- *  trim; cap at 60 chars. Empty result means "omit the segment". */
+ *  trim; cap at 60 chars. An empty result uses the filename fallback. */
 export function sanitizeJobIdSegment(jobId: string): string {
   const cleaned = jobId
     .replace(/[^A-Za-z0-9._-]+/g, '-')
@@ -50,12 +50,18 @@ export function sanitizeJobIdSegment(jobId: string): string {
   return cleaned;
 }
 
-/** `Cabinet-Walk_<sanitized-job-id>_<YYYY-MM-DD>.pdf`, omitting the ID segment
- *  when blank. Uses the walk creation date in the local timezone. */
+/** Use the sanitized Job/Lot ID when available, otherwise the local creation date and time. */
 export function buildPdfFilename(jobId: string, createdAt: number): string {
   const segment = sanitizeJobIdSegment(jobId);
-  const base = segment ? `Cabinet-Walk_${segment}` : 'Cabinet-Walk';
-  return `${base}_${pdfDateString(createdAt)}.pdf`;
+  if (segment) return `${segment}.pdf`;
+
+  const date = new Date(createdAt);
+  const hours = date.getHours();
+  const hour = hours % 12 || 12;
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  const seconds = String(date.getSeconds()).padStart(2, '0');
+  const period = hours < 12 ? 'AM' : 'PM';
+  return `Field-Walk_${pdfDateString(createdAt)}_${hour}.${minutes}.${seconds} ${period}.pdf`;
 }
 
 export const GRID_WIDTH_PT = PAGE_WIDTH_PT - MARGIN_PT * 2;

@@ -5,6 +5,10 @@ import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  server: {
+    // Reachable from the Mac over Tailscale via `tailscale serve`.
+    allowedHosts: ['masters.tailf8caf3.ts.net'],
+  },
   test: {
     environment: 'jsdom',
     setupFiles: ['src/tests/setup.ts'],

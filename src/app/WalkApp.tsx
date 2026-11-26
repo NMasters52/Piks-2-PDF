@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   MAX_PARKED_DRAFTS,
   StorageError,
+  type ExportEdit,
+  type RecentExport,
   type ParkedDraft,
   type SwitchWalkOptions,
   type WalkStore,
@@ -18,13 +20,16 @@ import {
 import { JobIdField } from '../components/JobIdField';
 import { PauseResumeControls } from '../components/PauseResumeControls';
 import { PhotoQueue } from '../components/PhotoQueue';
+import { RecentExportsDialog, openExport } from '../components/RecentExportsDialog';
 import { ReadOnlyBanner } from '../components/ReadOnlyBanner';
 import { SaveStatusBanner } from '../components/SaveStatusBanner';
+import { ThemeToggle } from '../components/ThemeToggle';
 import { WalkSwitchDialog, type WalkPrompt } from '../components/WalkSwitchDialog';
 import {
   MAX_PHOTOS,
   canAcceptSelection,
   remainingPhotoCapacity,
+  type HydrationResult,
   type SaveState,
   type Walk,
   type WalkPhoto,
@@ -72,6 +77,13 @@ export function WalkApp({ deps }: WalkAppProps) {
   const [loadingDrafts, setLoadingDrafts] = useState(false);
   const [switchingWalk, setSwitchingWalk] = useState(false);
   const [walkSwitchError, setWalkSwitchError] = useState<string | null>(null);
+  const [recentPrompt, setRecentPrompt] = useState<'history' | 'replace' | 'cancel-edit' | null>(null);
+  const [recentExports, setRecentExports] = useState<RecentExport[]>([]);
+  const [recentBusy, setRecentBusy] = useState(false);
+  const [recentError, setRecentError] = useState<string | null>(null);
+  const [exportEdit, setExportEdit] = useState<ExportEdit>();
+  const restorePositionRef = useRef<ExportEdit | undefined>(undefined);
+  const suspendedFailuresRef = useRef<FailedImport[]>([]);
   const draftRequestRef = useRef(0);
   const [exporting, setExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState<{
@@ -103,10 +115,12 @@ export function WalkApp({ deps }: WalkAppProps) {
         return;
       }
       setReadOnly(!writable);
-      const hydration = await nextStore.hydrate(() => {
-        if (!cancelled) setUpgradeBlocked(true);
-      });
+      const [hydration, edit] = await Promise.all([
+        nextStore.hydrate(() => { if (!cancelled) setUpgradeBlocked(true); }),
+        nextStore.getExportEdit(),
+      ]);
       if (cancelled) return;
+      setExportEdit(edit);
       if (hydration.status === 'ok') {
         setWalk(hydration.walk);
         setPhotos(hydration.photos);
@@ -131,6 +145,19 @@ export function WalkApp({ deps }: WalkAppProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mount once per store instance
   }, [deps]);
 
+  useLayoutEffect(() => {
+    const position = restorePositionRef.current;
+    if (!position) return;
+    restorePositionRef.current = undefined;
+    const photo = position.photoId
+      ? document.querySelector(`[data-photo-id="${CSS.escape(position.photoId)}"]`)
+      : null;
+    const top = photo
+      ? window.scrollY + photo.getBoundingClientRect().top - (position.photoOffset ?? 0)
+      : position.scrollY;
+    window.scrollTo(0, top);
+  }, [walk]);
+
   const committedCount = photos.length;
   const additionsBlocked =
     readOnly ||
@@ -141,8 +168,12 @@ export function WalkApp({ deps }: WalkAppProps) {
   // Mutual exclusion (playbook: prevent import/export/clear races; disable
   // mutations during snapshot/export for this MVP).
   const exportLocked = inFlightCount > 0 || switchingWalk || removingId !== null;
-  const mutationsLocked = exporting || walkPrompt !== null || switchingWalk;
-  const walkSwitchLocked = readOnly || mutationsLocked || exportLocked || pauseBusy || retrySaveBusy || saveState !== 'saved';
+  const mutationsLocked = exporting || walkPrompt !== null || recentPrompt !== null || switchingWalk;
+  const writeBusy = readOnly || exportLocked || pauseBusy || retrySaveBusy || saveState !== 'saved';
+  // Cancel edit stays available on 'save-failed': the discard path is the
+  // escape hatch that keeps the interrupted walk reachable.
+  const cancelEditLocked = readOnly || exportLocked || pauseBusy || retrySaveBusy;
+  const walkSwitchLocked = writeBusy || mutationsLocked || !!exportEdit;
   const hasCurrentWork = !!walk || jobIdInput.trim() !== '' || failedImports.length > 0;
 
   const captureDisabledReason = useMemo(() => {
@@ -385,52 +416,156 @@ export function WalkApp({ deps }: WalkAppProps) {
     setIsRecoveryExport(false);
   };
 
-  const runExport = useCallback(
-    async (recovery = false) => {
-      if (!walk || photos.length === 0) return;
-      if (exportInFlightRef.current) return;
-      exportInFlightRef.current = true;
-      setExporting(true);
-      setExportError(null);
+  const showWalk = (next: HydrationResult, unstartedJobId = '', failures: FailedImport[] = []) => {
+    setWalk(next.status === 'ok' ? next.walk : null);
+    setPhotos(next.status === 'ok' ? next.photos : []);
+    setJobIdInput(next.status === 'ok' ? next.walk.jobId : unstartedJobId);
+    importPhotoIdsRef.current.clear();
+    setFailedImports(failures);
+    setCapacityMessage(null);
+  };
+
+  const restoreWalk = (next: HydrationResult, edit: ExportEdit) => {
+    restorePositionRef.current = edit;
+    showWalk(next, edit.unstartedJobId, suspendedFailuresRef.current);
+    suspendedFailuresRef.current = [];
+    setExportEdit(undefined);
+  };
+
+  const showRecentExports = async () => {
+    setRecentPrompt('history');
+    setRecentError(null);
+    setRecentBusy(true);
+    try {
+      setRecentExports(await storeRef.current!.listRecentExports());
+    } catch {
+      setRecentExports([]);
+      setRecentError('Could not load recent exports. Close and try again.');
+    } finally {
+      setRecentBusy(false);
+    }
+  };
+
+  const beginExportEdit = async (id: string) => {
+    const entry = recentExports.find(({ walk }) => walk.id === id);
+    if (!entry || writeBusy || recentBusy || exportEdit) return;
+    const photo = Array.from(document.querySelectorAll<HTMLElement>('[data-photo-id]'))
+      .find((item) => item.getBoundingClientRect().bottom > 64);
+    const position = {
+      scrollY: window.scrollY,
+      photoId: window.scrollY > 0 ? photo?.dataset.photoId : undefined,
+      photoOffset: photo?.getBoundingClientRect().top,
+      unstartedJobId: walk ? undefined : jobIdInput,
+    };
+    setRecentBusy(true);
+    setRecentError(null);
+    try {
+      const next = await storeRef.current!.beginExportEdit(id, position);
+      suspendedFailuresRef.current = failedImports;
+      setExportEdit({ ...position, previous: { filename: entry.filename, pdf: entry.pdf } });
+      showWalk(next);
       resetExportArtifact();
+      setRecentExports([]);
+      setRecentPrompt(null);
+      window.scrollTo(0, 0);
+    } catch {
+      setRecentError('Could not open the export for editing. Try again.');
+    } finally {
+      setRecentBusy(false);
+    }
+  };
 
-      try {
-        // Snapshot built inside try: a blob read failure must leave the
-        // export retryable, not permanently busy.
-        const sorted = [...photos].sort((a, b) => a.order - b.order);
-        const snapshot: ExportSnapshot = {
-          // The input is the live source of truth for edits (walk.jobId only
-          // refreshes on hydration/create), including a cleared ID.
-          jobId: jobIdInput,
-          walkCreatedAt: walk.createdAt,
-          photos: await Promise.all(
-            sorted.map(async (p) => ({
-              order: p.order + 1,
-              jpegBytes: await blobToArrayBuffer(p.blob),
-              width: p.width,
-              height: p.height,
-              note: p.note,
-            })),
-          ),
-        };
+  const cancelExportEdit = async () => {
+    if (!exportEdit || cancelEditLocked || recentBusy) return;
+    setRecentBusy(true);
+    setRecentError(null);
+    try {
+      // A blocked save queue rejects finishExportEdit outright; discard drops
+      // the parked edit saves so the interrupted walk stays reachable even
+      // when saving keeps failing.
+      const next = saveState === 'save-failed'
+        ? await storeRef.current!.discardExportEdit()
+        : await storeRef.current!.finishExportEdit();
+      restoreWalk(next, exportEdit);
+      resetExportArtifact();
+      setRecentPrompt(null);
+    } catch {
+      setRecentError('Could not return to the interrupted walk. Try again.');
+    } finally {
+      setRecentBusy(false);
+    }
+  };
 
-        setIsRecoveryExport(recovery);
-        const result = await deps.renderWalkPdf(snapshot, (info) => setExportProgress(info));
-        setExportBytes(result.bytes);
-        setExportFilename(result.filename);
-        setExportWarnings(result.warnings ?? []);
-      } catch (err) {
-        if (err instanceof PdfExportError && err.code === 'worker') {
-          return;
+  const runExport = async (recovery = false) => {
+    if (!walk || photos.length === 0 || exportInFlightRef.current) return;
+    exportInFlightRef.current = true;
+    setExporting(true);
+    resetExportArtifact();
+    setIsRecoveryExport(recovery);
+
+    try {
+      const snapshot: ExportSnapshot = {
+        jobId: jobIdInput,
+        walkCreatedAt: walk.createdAt,
+        photos: await Promise.all(
+          [...photos].sort((a, b) => a.order - b.order).map(async (p) => ({
+            order: p.order + 1,
+            jpegBytes: await blobToArrayBuffer(p.blob),
+            width: p.width,
+            height: p.height,
+            note: p.note,
+          })),
+        ),
+      };
+
+      const result = await deps.renderWalkPdf(snapshot, (info) => setExportProgress(info));
+      const warnings = [...(result.warnings ?? [])];
+      const artifact = {
+        filename: result.filename,
+        pdf: new Blob([new Uint8Array(result.bytes)], { type: 'application/pdf' }),
+      };
+      if (exportEdit && !recovery) {
+        try {
+          const next = await storeRef.current!.finishExportEdit(artifact);
+          restoreWalk(next, exportEdit);
+        } catch {
+          // Storage refused the replacement (e.g. quota): keep the edit
+          // session and the previous entry intact, but still expose the
+          // rendered PDF so the user can keep a copy outside the app.
+          warnings.push('Could not save the corrected export to Recent exports. Download it to keep a copy.');
         }
-        setExportError(err instanceof Error ? err.message : 'Export failed');
-      } finally {
-        exportInFlightRef.current = false;
-        setExporting(false);
+      } else if (!recovery) {
+        try {
+          await storeRef.current!.saveRecentExport({
+            ...artifact,
+            walk: { ...walk, jobId: jobIdInput },
+            photos,
+          });
+        } catch {
+          warnings.push('Could not save this PDF to Recent exports. Download it to keep a copy.');
+        }
       }
-    },
-    [walk, photos, jobIdInput, deps],
-  );
+      setExportBytes(result.bytes);
+      setExportFilename(result.filename);
+      setExportWarnings(warnings);
+    } catch (err) {
+      if (err instanceof PdfExportError && err.code === 'worker') return;
+      setExportError(err instanceof Error ? err.message : 'Export failed');
+    } finally {
+      exportInFlightRef.current = false;
+      setExporting(false);
+    }
+  };
+
+  const requestExport = () => {
+    if (exportEdit) {
+      setRecentError(null);
+      setRecentPrompt('replace');
+      return;
+    }
+    window.scrollTo(0, 0);
+    void runExport();
+  };
 
   const handleShare = async () => {
     if (!exportBytes || !exportFilename) return;
@@ -499,12 +634,7 @@ export function WalkApp({ deps }: WalkAppProps) {
     setWalkSwitchError(null);
     try {
       const next = await store.switchWalk(options);
-      setWalk(next.status === 'ok' ? next.walk : null);
-      setPhotos(next.status === 'ok' ? next.photos : []);
-      setJobIdInput(next.status === 'ok' ? next.walk.jobId : '');
-      importPhotoIdsRef.current.clear();
-      setFailedImports([]);
-      setCapacityMessage(null);
+      showWalk(next);
       resetExportArtifact();
       dismissWalkPrompt();
       window.scrollTo(0, 0);
@@ -531,7 +661,7 @@ export function WalkApp({ deps }: WalkAppProps) {
 
   if (hydrating) {
     return (
-      <main className="walk-page mx-auto min-h-dvh max-w-2xl bg-white p-4 pb-32 sm:px-6">
+      <main className="walk-page mx-auto min-h-dvh max-w-2xl border bg-surface p-4 pb-32 sm:px-6">
         <p className="text-sm">Loading walk…</p>
         <p className="text-sm" role="status">
           {upgradeBlocked ? 'Close or reload any other Pik-2-PDF tabs to finish loading.' : null}
@@ -547,10 +677,10 @@ export function WalkApp({ deps }: WalkAppProps) {
     saveState === 'saved' && !walk && jobIdInput.trim() !== '' ? 'unsaved' : saveState;
 
   return (
-    <main className="walk-page mx-auto min-h-dvh max-w-2xl bg-white p-4 pb-32 sm:px-6">
+    <main className="walk-page mx-auto min-h-dvh max-w-2xl border bg-surface p-4 pb-32 sm:px-6">
       <header className="mb-2 flex flex-wrap items-center justify-between gap-2">
         <h1 className="text-2xl font-bold tracking-tight">Pik-2-PDF</h1>
-        <div className="flex flex-wrap items-center gap-x-3">
+        <div className="ml-auto flex flex-wrap items-center gap-x-3">
           <SaveStatusBanner
             saveState={effectiveSaveState}
             error={saveError}
@@ -569,33 +699,47 @@ export function WalkApp({ deps }: WalkAppProps) {
           >
             Drafts
           </button>
+          <ThemeToggle />
         </div>
       </header>
-      <nav aria-label="Walk actions" className="walk-toolbar sticky top-0 z-10 mb-3 grid grid-cols-3 gap-2 border-b bg-white py-2 text-sm">
+      <nav aria-label="Walk actions" className="walk-toolbar sticky top-0 z-10 mb-3 grid grid-cols-4 gap-2 border-b bg-surface py-2 text-sm">
         <button
           type="button"
-          disabled={readOnly || exportLocked || photos.length === 0 || mutationsLocked}
-          onClick={() => {
-            window.scrollTo(0, 0);
-            void runExport(false);
-          }}
+          disabled={readOnly || exportLocked || photos.length === 0 || mutationsLocked || (!!exportEdit && writeBusy)}
+          onClick={requestExport}
         >
-          {exporting ? 'Generating PDF…' : isRecoveryExport ? 'Recovery export PDF' : 'Export PDF'}
+          {exporting ? 'Generating PDF…' : exportEdit ? 'Export Edited PDF' : isRecoveryExport ? 'Recovery export PDF' : 'Export PDF'}
         </button>
         <button
           type="button"
-          disabled={!hasCurrentWork || walkSwitchLocked}
-          onClick={() => setWalkPrompt({ kind: 'new' })}
+          disabled={exportEdit ? cancelEditLocked || mutationsLocked : !hasCurrentWork || walkSwitchLocked}
+          onClick={() => {
+            if (exportEdit) {
+              setRecentError(null);
+              setRecentPrompt('cancel-edit');
+            } else {
+              setWalkPrompt({ kind: 'new' });
+            }
+          }}
         >
-          New walk
+          {exportEdit ? 'Cancel edit' : 'New walk'}
         </button>
         <button type="button" disabled={!photos.length} onClick={() => window.scrollTo(0, document.documentElement.scrollHeight)}>
           Jump to bottom ↓
         </button>
+        <button
+          type="button"
+          className="min-h-11 px-2 text-sm font-medium underline underline-offset-4 disabled:opacity-50"
+          disabled={mutationsLocked}
+          onClick={showRecentExports}
+        >
+          Recent exports
+        </button>
       </nav>
-      <p className="mb-4 text-xs text-neutral-700">
+      <p className="mb-4 text-xs text-muted">
         Saved means on this device only — export and keep PDFs in Files as your backup.
       </p>
+      {exportEdit && <p className="mb-2 text-sm font-medium">Editing a recent export</p>}
       <ExportControls
         exporting={exporting}
         exportProgress={exportProgress}
@@ -605,7 +749,7 @@ export function WalkApp({ deps }: WalkAppProps) {
         onShare={handleShare}
         onDownload={handleDownload}
         onDismissExport={resetExportArtifact}
-        onRetryExport={() => runExport(isRecoveryExport)}
+        onRetryExport={() => isRecoveryExport ? void runExport(true) : requestExport()}
       />
 
 
@@ -618,7 +762,7 @@ export function WalkApp({ deps }: WalkAppProps) {
       <CapacityIndicator committedCount={committedCount} inFlightCount={inFlightCount} />
 
       {capacityMessage ? (
-        <p className="mb-3 border border-black px-3 py-2 text-sm" role="alert">
+        <p className="mb-3 border border-foreground px-3 py-2 text-sm" role="alert">
           {capacityMessage}
         </p>
       ) : null}
@@ -656,6 +800,28 @@ export function WalkApp({ deps }: WalkAppProps) {
         removingId={removingId}
       />
 
+      {recentPrompt && (
+        <RecentExportsDialog
+          mode={recentPrompt}
+          entries={recentExports}
+          loading={recentBusy}
+          error={recentError}
+          canEdit={!writeBusy && !exportEdit}
+          onEdit={(id) => void beginExportEdit(id)}
+          onReplace={(downloadPrevious) => {
+            if (!exportEdit || writeBusy || exportInFlightRef.current) return;
+            if (downloadPrevious) openExport(exportEdit.previous, true);
+            setRecentPrompt(null);
+            window.scrollTo(0, 0);
+            void runExport();
+          }}
+          onCancelEdit={() => void cancelExportEdit()}
+          onClose={() => {
+            setRecentExports([]);
+            setRecentPrompt(null);
+          }}
+        />
+      )}
       {walkPrompt && (
         <WalkSwitchDialog
           prompt={walkPrompt}

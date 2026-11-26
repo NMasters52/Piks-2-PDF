@@ -19,19 +19,19 @@ const TS = new Date(2026, 10, 14, 12, 0, 0).getTime();
 
 describe('pdf filename', () => {
   it('includes a sanitized job id segment', () => {
-    expect(buildPdfFilename('J-12', TS)).toBe('Cabinet-Walk_J-12_2026-11-14.pdf');
+    expect(buildPdfFilename('J-12', TS)).toBe('J-12.pdf');
   });
 
   it('omits the segment for a blank id', () => {
-    expect(buildPdfFilename('', TS)).toBe('Cabinet-Walk_2026-11-14.pdf');
+    expect(buildPdfFilename('', TS)).toBe('Field-Walk_2026-11-14_12.00.00 PM.pdf');
   });
 
   it('sanitizes unsafe characters', () => {
-    expect(buildPdfFilename('a/b\\c:d*?', TS)).toBe('Cabinet-Walk_a-b-c-d_2026-11-14.pdf');
+    expect(buildPdfFilename('a/b\\c:d*?', TS)).toBe('a-b-c-d.pdf');
   });
 
   it('omits the segment when sanitizing empties the id', () => {
-    expect(buildPdfFilename('///', TS)).toBe('Cabinet-Walk_2026-11-14.pdf');
+    expect(buildPdfFilename('///', TS)).toBe('Field-Walk_2026-11-14_12.00.00 PM.pdf');
     expect(sanitizeJobIdSegment('///')).toBe('');
   });
 
@@ -92,7 +92,7 @@ describe('worker message types compile', () => {
   it('discriminates the union', () => {
     const msgs: PdfWorkerOutgoing[] = [
       { type: 'progress', photosDone: 1, totalPhotos: 4 } satisfies PdfRenderProgress,
-      { type: 'done', bytes: new ArrayBuffer(8), filename: 'Cabinet-Walk_2026-11-14.pdf' } satisfies PdfRenderDone,
+      { type: 'done', bytes: new ArrayBuffer(8), filename: 'Field-Walk_2026-11-14_12.00.00 PM.pdf' } satisfies PdfRenderDone,
       { type: 'error', code: 'render', message: 'x' } satisfies PdfRenderError,
     ];
     expect(msgs).toHaveLength(3);

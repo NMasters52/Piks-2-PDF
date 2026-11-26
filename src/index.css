@@ -1,15 +1,79 @@
 @import "tailwindcss";
 
-/* Black-and-white, basic-lines UI. UI agent owns the full styling. */
+/*
+ * Shared styling & dark mode playbook.
+ * Palette tokens are RGB triplets; semantic tokens reference them and are
+ * flipped by the `.dark` class on <html> (set by the ThemeToggle and the
+ * inline bootstrap script in index.html). Components consume semantic
+ * utilities only (bg-surface, text-foreground, border-border, …) — never
+ * hardcoded colors.
+ */
+:root {
+  --carbon: 18 18 18;
+  --graphite: 38 38 38;
+  --concrete: 163 163 160;
+  --dust: 229 229 225;
+  --chalk: 247 247 244;
+  --orange: 255 107 0; /* reserved for branding; unused in app UI */
+
+  /* Semantic tokens — light mode */
+  --background: var(--chalk);
+  --surface: var(--chalk);
+  --card: var(--chalk);
+  --foreground: var(--carbon);
+  --muted: var(--graphite);
+  --border: var(--dust);
+  --primary: var(--carbon);
+  --primary-foreground: var(--chalk);
+
+  /* Preserved semantic error state */
+  --danger: 185 28 28; /* border */
+  --danger-foreground: 153 27 27; /* text */
+  --danger-surface: 254 242 242; /* background */
+}
+
+.dark {
+  /* Semantic tokens — dark mode */
+  --background: var(--carbon);
+  --surface: var(--graphite);
+  --card: var(--carbon);
+  --foreground: var(--chalk);
+  --muted: var(--concrete);
+  --border: var(--graphite);
+  --primary: var(--chalk);
+  --primary-foreground: var(--carbon);
+
+  --danger: 248 113 113;
+  --danger-foreground: 252 165 165;
+  --danger-surface: 69 10 10;
+}
+
+@theme inline {
+  --color-background: rgb(var(--background));
+  --color-surface: rgb(var(--surface));
+  --color-card: rgb(var(--card));
+  --color-foreground: rgb(var(--foreground));
+  --color-muted: rgb(var(--muted));
+  --color-border: rgb(var(--border));
+  --color-primary: rgb(var(--primary));
+  --color-primary-foreground: rgb(var(--primary-foreground));
+  --color-danger: rgb(var(--danger));
+  --color-danger-foreground: rgb(var(--danger-foreground));
+  --color-danger-surface: rgb(var(--danger-surface));
+}
+
+:root { color-scheme: light; }
+.dark { color-scheme: dark; }
+
 body {
-  background: #ffffff;
-  color: #000000;
+  background: rgb(var(--background));
+  color: rgb(var(--foreground));
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 
 :focus-visible {
-  outline: 2px solid #000000;
+  outline: 2px solid rgb(var(--foreground));
   outline-offset: 2px;
 }
 
@@ -25,10 +89,14 @@ body {
   border-width: 0;
 }
 
+.walk-page { border-color: rgb(var(--border)); }
+
+.walk-toolbar { border-color: rgb(var(--border)); }
+
 .walk-toolbar > button {
   min-height: 44px;
   padding: 0.375rem;
-  border: 1px solid currentColor;
+  border: 1px solid rgb(var(--foreground));
   border-radius: 0.25rem;
 }
 
@@ -36,13 +104,11 @@ body {
   opacity: 0.5;
 }
 
-body { background: #f4f5f3; color: #202722; }
-.walk-page { box-shadow: 0 0 0 1px #e0e4df; }
-.walk-toolbar { border-color: #d9dfd9; }
-.walk-toolbar > button, .capture-bar label, .capture-bar button,
-.walk-page input[type="text"], .walk-page textarea {
-  border-color: #919c94;
-  border-radius: 6px;
-}
-.capture-bar label:first-child { background: #224b39; border-color: #224b39; color: white; }
 .walk-page button:enabled, .capture-bar label { cursor: pointer; }
+
+/* Primary capture action (token-driven primary button). */
+.capture-bar label:first-child {
+  background: rgb(var(--primary));
+  border-color: rgb(var(--primary));
+  color: rgb(var(--primary-foreground));
+}

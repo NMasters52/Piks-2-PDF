@@ -141,7 +141,7 @@ describe('PDF export acceptance', () => {
     const text = await pageText(await pdf.getPage(1));
     expect(text).toContain('2026-11-14');
     expect(text).not.toContain('J-TEST');
-    expect(buildPdfFilename('', TS)).toBe('Cabinet-Walk_2026-11-14.pdf');
+    expect(buildPdfFilename('', TS)).toBe('Field-Walk_2026-11-14_12.00.00 PM.pdf');
   });
 
   it('renders a full 200-char note with accents and a long word', async () => {

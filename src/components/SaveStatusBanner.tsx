@@ -18,7 +18,7 @@ export function SaveStatusBanner({
 }: SaveStatusBannerProps) {
   if (saveState === 'saved') {
     return (
-      <p className="text-xs text-neutral-600" role="status" aria-live="polite">
+      <p className="text-xs text-muted" role="status" aria-live="polite">
         Saved on this device
       </p>
     );
@@ -26,7 +26,7 @@ export function SaveStatusBanner({
 
   if (saveState === 'unsaved') {
     return (
-      <p className="text-xs text-neutral-600" role="status" aria-live="polite">
+      <p className="text-xs text-muted" role="status" aria-live="polite">
         Unsaved changes…
       </p>
     );
@@ -35,7 +35,7 @@ export function SaveStatusBanner({
   return (
     <div
       role="alert"
-      className="mb-4 border border-black bg-neutral-100 px-3 py-3 text-sm"
+      className="mb-4 border border-foreground bg-card px-3 py-3 text-sm"
     >
       <p className="font-medium">Save failed</p>
       {error ? <p className="mt-1">{error.message}</p> : null}
@@ -48,14 +48,14 @@ export function SaveStatusBanner({
           type="button"
           onClick={onRetry}
           disabled={retrying}
-          className="border border-black px-3 py-2 text-sm font-medium focus:outline focus:outline-2 focus:outline-offset-2 focus:outline-black disabled:opacity-50"
+          className="border border-foreground px-3 py-2 text-sm font-medium focus:outline focus:outline-2 focus:outline-offset-2 focus:outline-foreground disabled:opacity-50"
         >
           {retrying ? 'Retrying…' : 'Retry save'}
         </button>
         <button
           type="button"
           onClick={onRecoveryExport}
-          className="border border-black px-3 py-2 text-sm font-medium focus:outline focus:outline-2 focus:outline-offset-2 focus:outline-black"
+          className="border border-foreground px-3 py-2 text-sm font-medium focus:outline focus:outline-2 focus:outline-offset-2 focus:outline-foreground"
         >
           Recovery export (PDF)
         </button>
