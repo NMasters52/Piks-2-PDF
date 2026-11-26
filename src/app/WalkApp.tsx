@@ -521,8 +521,10 @@ export function WalkApp({ deps }: WalkAppProps) {
           const next = await storeRef.current!.finishExportEdit(artifact);
           restoreWalk(next, exportEdit);
         } catch {
-          setExportError('Could not save the corrected export. The previous PDF is still available.');
-          return;
+          // Storage refused the replacement (e.g. quota): keep the edit
+          // session and the previous entry intact, but still expose the
+          // rendered PDF so the user can keep a copy outside the app.
+          warnings.push('Could not save the corrected export to Recent exports. Download it to keep a copy.');
         }
       } else if (!recovery) {
         try {
