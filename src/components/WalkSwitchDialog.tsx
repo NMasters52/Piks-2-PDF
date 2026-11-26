@@ -26,7 +26,7 @@ function DraftDetails({ draft }: { draft: ParkedDraft }) {
   return (
     <span className="block min-w-0">
       <span className="block wrap-anywhere font-medium">{draft.jobId || 'Untitled walk'}</span>
-      <span className="block text-xs text-neutral-600">
+      <span className="block text-xs text-muted">
         {draft.photoCount} {draft.photoCount === 1 ? 'photo' : 'photos'} · Edited{' '}
         {new Date(draft.updatedAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}
       </span>
@@ -35,7 +35,7 @@ function DraftDetails({ draft }: { draft: ParkedDraft }) {
 }
 
 const buttonClass =
-  'min-h-11 rounded-md border border-neutral-400 px-3 py-2 text-sm disabled:opacity-50';
+  'min-h-11 rounded-md border border-foreground px-3 py-2 text-sm disabled:opacity-50';
 
 export function WalkSwitchDialog({
   prompt, drafts, loading, busy, error, canPark, onOpenDraft, onPark, onReplace,
@@ -74,7 +74,7 @@ export function WalkSwitchDialog({
   return (
     <dialog
       ref={dialog}
-      className="m-auto max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-sm overflow-auto rounded-lg border border-neutral-300 bg-white p-4 shadow-lg backdrop:bg-black/40"
+      className="m-auto max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-sm overflow-auto rounded-lg border border-border bg-card p-4 backdrop:bg-black/40"
       aria-labelledby="walk-switch-title"
       aria-describedby={prompt.kind === 'drafts' ? undefined : 'walk-switch-description'}
       aria-modal="true"
@@ -101,7 +101,7 @@ export function WalkSwitchDialog({
           All three draft slots are full. Replacing a draft deletes its photos and notes.
         </p>
       )}
-      {error && <p className="mt-2 text-sm text-red-800" role="alert">{error}</p>}
+      {error && <p className="mt-2 text-sm text-danger-foreground" role="alert">{error}</p>}
       {selectingDraft && (
         loading ? <p className="mt-2 text-sm" role="status">Loading drafts…</p>
           : drafts.length === 0 ? (
@@ -112,7 +112,7 @@ export function WalkSwitchDialog({
               {drafts.map((draft) => (
                 <li key={draft.id}>
                   {replacement ? (
-                    <label className="flex min-h-11 cursor-pointer items-center gap-2 rounded-md border border-neutral-400 p-2 text-sm">
+                    <label className="flex min-h-11 cursor-pointer items-center gap-2 rounded-md border border-foreground p-2 text-sm">
                       <input
                         type="radio"
                         name="replace-draft"
@@ -160,7 +160,7 @@ export function WalkSwitchDialog({
         {!selectingDraft && (
           <button
             type="button"
-            className={`${buttonClass} ml-auto border-red-700 text-red-800 hover:bg-red-50`}
+            className={`${buttonClass} ml-auto border-danger text-danger-foreground hover:bg-danger-surface`}
             disabled={busy || loading}
             onClick={onDiscard}
           >

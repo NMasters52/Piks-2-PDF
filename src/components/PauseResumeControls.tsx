@@ -18,7 +18,7 @@ export function PauseResumeControls({
   return (
     <div className="mb-4 flex flex-wrap items-center gap-2">
       {status === 'paused' ? (
-        <span className="border border-black px-2 py-1 text-sm font-medium" role="status">
+        <span className="border border-foreground px-2 py-1 text-sm font-medium" role="status">
           Walk paused
         </span>
       ) : null}
@@ -27,7 +27,7 @@ export function PauseResumeControls({
           type="button"
           onClick={onPause}
           disabled={disabled || busy}
-          className="border border-black px-3 py-2 text-sm focus:outline focus:outline-2 focus:outline-offset-2 focus:outline-black disabled:opacity-50"
+          className="border border-foreground px-3 py-2 text-sm focus:outline focus:outline-2 focus:outline-offset-2 focus:outline-foreground disabled:opacity-50"
         >
           {busy ? 'Pausing…' : 'Pause walk'}
         </button>
@@ -36,7 +36,7 @@ export function PauseResumeControls({
           type="button"
           onClick={onResume}
           disabled={disabled || busy}
-          className="border border-black px-3 py-2 text-sm focus:outline focus:outline-2 focus:outline-offset-2 focus:outline-black disabled:opacity-50"
+          className="border border-foreground px-3 py-2 text-sm focus:outline focus:outline-2 focus:outline-offset-2 focus:outline-foreground disabled:opacity-50"
         >
           Resume walk
         </button>

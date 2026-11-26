@@ -32,16 +32,16 @@ export function PhotoCard({
   }, [photo.note]);
 
   return (
-    <li className="rounded-lg border border-neutral-300 p-3">
+    <li data-photo-id={photo.id} className="rounded-lg border border-border bg-card p-3">
       <div className="flex gap-3">
         {thumbUrl ? (
           <img
             src={thumbUrl}
             alt={`Photo ${displayNumber}`}
-            className="h-20 w-20 shrink-0 border border-neutral-400 object-contain"
+            className="h-20 w-20 shrink-0 border border-border object-contain"
           />
         ) : (
-          <div className="h-20 w-20 shrink-0 border border-neutral-400 bg-neutral-100" />
+          <div className="h-20 w-20 shrink-0 border border-border bg-surface" />
         )}
         <div className="min-w-0 flex-1">
           <p className="text-sm font-medium">Photo {displayNumber}</p>
@@ -59,9 +59,9 @@ export function PhotoCard({
               setNote(next);
               onNoteChange(photo.id, next);
             }}
-            className="mt-1 w-full border border-black px-2 py-1 text-base focus:outline focus:outline-2 focus:outline-offset-1 focus:outline-black disabled:opacity-50"
+            className="mt-1 w-full border border-foreground px-2 py-1 text-base focus:outline focus:outline-2 focus:outline-offset-1 focus:outline-foreground disabled:opacity-50"
           />
-          <p className="mt-1 text-right text-xs text-neutral-700" aria-live="polite">
+          <p className="mt-1 text-right text-xs text-muted" aria-live="polite">
             {note.length} / {MAX_NOTE_CHARS}
           </p>
         </div>
@@ -70,7 +70,7 @@ export function PhotoCard({
         type="button"
         disabled={disabled || removing}
         onClick={() => onRemove(photo.id)}
-        className="mt-3 border border-black px-3 py-1 text-sm focus:outline focus:outline-2 focus:outline-offset-2 focus:outline-black disabled:opacity-50"
+        className="mt-3 border border-foreground px-3 py-1 text-sm focus:outline focus:outline-2 focus:outline-offset-2 focus:outline-foreground disabled:opacity-50"
       >
         {removing ? 'Removing…' : 'Remove photo'}
       </button>

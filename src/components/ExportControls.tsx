@@ -35,14 +35,14 @@ export function ExportControls({
           <button
             type="button"
             onClick={onRetryExport}
-            className="mt-2 border border-black px-3 py-1 text-sm focus:outline focus:outline-2 focus:outline-offset-2 focus:outline-black"
+            className="mt-2 border border-foreground px-3 py-1 text-sm focus:outline focus:outline-2 focus:outline-offset-2 focus:outline-foreground"
           >
             Retry export
           </button>
         </div>
       ) : null}
       {exportReady ? (
-        <div className="mb-4 grid grid-cols-2 gap-2 rounded-md border border-neutral-300 bg-neutral-50 p-3">
+        <div className="mb-4 grid grid-cols-2 gap-2 rounded-md border border-border bg-card p-3">
           <p className="col-span-2 wrap-anywhere text-sm font-medium" role="status">
             PDF ready: {exportReady.filename}
           </p>
@@ -54,21 +54,21 @@ export function ExportControls({
           <button
             type="button"
             onClick={onShare}
-            className="border border-black px-3 py-2 text-sm focus:outline focus:outline-2 focus:outline-offset-2 focus:outline-black"
+            className="border border-foreground px-3 py-2 text-sm focus:outline focus:outline-2 focus:outline-offset-2 focus:outline-foreground"
           >
             Save / Share
           </button>
           <button
             type="button"
             onClick={onDownload}
-            className="border border-black px-3 py-2 text-sm focus:outline focus:outline-2 focus:outline-offset-2 focus:outline-black"
+            className="border border-foreground px-3 py-2 text-sm focus:outline focus:outline-2 focus:outline-offset-2 focus:outline-foreground"
           >
             Download
           </button>
           <button
             type="button"
             onClick={onDismissExport}
-            className="col-span-2 justify-self-end text-sm underline focus:outline focus:outline-2 focus:outline-offset-2 focus:outline-black"
+            className="col-span-2 justify-self-end text-sm underline focus:outline focus:outline-2 focus:outline-offset-2 focus:outline-foreground"
           >
             Dismiss
           </button>

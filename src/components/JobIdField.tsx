@@ -16,7 +16,7 @@ export function JobIdField({ value, onChange, disabled }: JobIdFieldProps) {
         value={value}
         disabled={disabled}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full border border-black px-3 py-2 text-base focus:outline focus:outline-2 focus:outline-offset-2 focus:outline-black disabled:opacity-50"
+        className="w-full border border-foreground px-3 py-2 text-base focus:outline focus:outline-2 focus:outline-offset-2 focus:outline-foreground disabled:opacity-50"
         autoComplete="off"
       />
     </div>
